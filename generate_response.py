@@ -1,7 +1,6 @@
 import openai
 
-
-def generate_response(api_key, conversation_history, context_info):
+def generate_response(api_key, conversation_history, context_info, extra_context=None):
     openai.api_key = api_key
 
     assistant_marker = "Assistant:"
@@ -15,6 +14,10 @@ def generate_response(api_key, conversation_history, context_info):
             formatted_history += f"{assistant_marker} {message}\n"
 
     prompt = f"{context_info}\n\n{formatted_history}{assistant_marker} "
+
+    # Include extra_context in the prompt if available
+    if extra_context:
+        prompt += f"{extra_context}\n"
 
     response = openai.Completion.create(
         engine="text-davinci-002",
