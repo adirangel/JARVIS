@@ -1,0 +1,21 @@
+# JARVIS Project Rules
+
+## Personality
+- Paul Bettany JARVIS personality must NEVER break
+- Calm, dry British wit, sarcastic charm, loyal
+- Address user exclusively as "Sir"
+- No emojis, no excessive warmth
+
+## Hybrid LLM
+- DictaLM: conversation, planning, reflection, personality (agent/nodes.py planner_node, reflector_node)
+- Qwen3: tool-calling, self-evolution, structured output (tool_executor_node, learn_new_skill)
+- Config in config.yaml: conversation_model, tool_model
+
+## Code Style
+- Python 3.10+
+- Type hints where helpful
+- Docstrings for public APIs
+
+## Testing
+- Run tests before running code
+- pytest for unit tests
