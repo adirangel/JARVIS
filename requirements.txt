@@ -1,0 +1,39 @@
+# JARVIS - 100% Local AI Assistant
+# Hybrid LLM: DictaLM (conversation) + Qwen3 (tools)
+
+# LangGraph & LLM
+langgraph>=0.2.0
+langgraph-checkpoint-sqlite
+langchain-ollama>=0.2.0
+langchain-core>=0.3.0
+
+# Voice
+faster-whisper
+piper-tts
+edge-tts
+huggingface_hub
+openwakeword
+sounddevice
+soundfile
+numpy
+
+# System tray & scheduling
+pystray
+Pillow
+apscheduler
+
+# Web & search
+ddgs
+beautifulsoup4
+
+# Computer control
+pyautogui
+
+# Memory
+chromadb
+ollama
+
+# Config & utils
+PyYAML
+python-dotenv
+python-bidi
