@@ -170,12 +170,9 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                     print(f"[Wake] You said: {_display_text(text)}", flush=True)
                 try_open_browser_from_intent(text, tool_router)
                 max_words = config.get("voice", {}).get("max_response_words", 50)
-                def _stream_cb(chunk: str):
-                    if verbose:
-                        print(_display_text(chunk), end="", flush=True)
-                response = invoke_jarvis(graph, text, stream_callback=_stream_cb if verbose else None, max_words=max_words)
+                response = invoke_jarvis(graph, text, stream_callback=None, max_words=max_words)
                 if verbose:
-                    print()  # newline after stream
+                    print(_display_text(response), flush=True)
                 memory.save_interaction(text, response)
                 wav_path = tts.synthesize(response)
                 try:
@@ -219,9 +216,9 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                     if verbose:
                         print(f"[Wake] You said: {_display_text(text2)}", flush=True)
                     try_open_browser_from_intent(text2, tool_router)
-                    response2 = invoke_jarvis(graph, text2, stream_callback=_stream_cb if verbose else None, max_words=max_words)
+                    response2 = invoke_jarvis(graph, text2, stream_callback=None, max_words=max_words)
                     if verbose:
-                        print()
+                        print(_display_text(response2), flush=True)
                     memory.save_interaction(text2, response2)
                     wav_path2 = tts.synthesize(response2)
                     try:
@@ -275,11 +272,9 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                     print(f"You said: {_display_text(text)}", flush=True)
                     try_open_browser_from_intent(text, tool_router)
                     max_words = config.get("voice", {}).get("max_response_words", 50)
-                    def _stream_cb(chunk: str):
-                        print(_display_text(chunk), end="", flush=True)
                     print("JARVIS: ", end="", flush=True)
-                    response = invoke_jarvis(graph, text, stream_callback=_stream_cb, max_words=max_words)
-                    print()  # newline after stream
+                    response = invoke_jarvis(graph, text, stream_callback=None, max_words=max_words)
+                    print(_display_text(response), flush=True)
                     memory.save_interaction(text, response)
                     print()  # blank line before next prompt
                     wav_path = tts.synthesize(response)
@@ -316,11 +311,9 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                 if not text:
                     continue
                 try_open_browser_from_intent(text, tool_router)
-                def _stream_cb(chunk: str):
-                    print(_display_text(chunk), end="", flush=True)
                 print("JARVIS: ", end="", flush=True)
-                response = invoke_jarvis(graph, text, stream_callback=_stream_cb, max_words=max_words)
-                print()
+                response = invoke_jarvis(graph, text, stream_callback=None, max_words=max_words)
+                print(_display_text(response), flush=True)
                 memory.save_interaction(text, response)
                 wav_path = tts.synthesize(response)
                 try:
