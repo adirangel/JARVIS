@@ -45,7 +45,6 @@ pip install -r requirements.txt
 2. Pull the required models:
 
 ```powershell
-ollama pull aminadaven/dictalm2.0-instruct:q5_K_M
 ollama pull qwen3:4b
 ollama pull nomic-embed-text
 ```
@@ -127,7 +126,7 @@ For GPU-accelerated speech-to-text, install [CUDA 12](https://developer.nvidia.c
 
 - **FastPath**: Simple commands (hi, thanks) skip Planner → direct Reflector
 - **Streaming TTS**: First phrase ("As you wish, Sir...") plays within ~800ms
-- **Hybrid LLM**: DictaLM for Planner/Reflector, Qwen3 for tools
+- **Single model**: qwen3:4b for all tasks (conversation, planning, tools)
 - **Voice**: faster-whisper int8 + beam_size=3, Piper preload
 - **Memory**: Chroma cache for <100ms queries
 - **Debug timing**: Set `timing: true` in config for per-node latency

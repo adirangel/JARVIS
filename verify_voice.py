@@ -8,8 +8,9 @@ Checks:
 2. STT + language detection
 3. Active-session state machine (3-turn continuity)
 4. Noise filtering expectations
-5. Long Hebrew TTS synthesis (no cut)
+5. Long TTS synthesis (chunked, no truncation)
 6. Agent response
+7. Time query routing (get_current_time tool)
 """
 
 import sys
@@ -96,7 +97,7 @@ def main():
     print(f"   'thank you' accepted={v1} reason={r1}")
     print(f"   'background noise' accepted={v2} reason={r2}\n")
 
-    # 5) Long TTS (chunked, no truncation)
+    # 5) Long TTS (chunked, no truncation - English only)
     print("5) Testing long TTS (chunked, no truncation)...")
     from voice.tts import create_tts
 
@@ -132,6 +133,23 @@ def main():
         print(f"   Agent reply ({lat:.2f}s): {reply[:120]}\n")
     except Exception as e:
         print(f"   Agent test failed: {e}\n")
+
+    # 7) Time query (must use get_current_time, never guess)
+    print("7) Testing time query routing...")
+    try:
+        from agent.graph import create_jarvis_graph, invoke_jarvis, _is_time_query
+
+        assert _is_time_query("what time is it") is True
+        assert _is_time_query("current time in Tokyo") is True
+        assert _is_time_query("Can you hear me now?") is False
+        graph = create_jarvis_graph(config, checkpointer_path="data/verify_cp")
+        reply, _ = invoke_jarvis(graph, "What time is it?", max_words=0, config=config)
+        # Reply should contain time-like pattern (HH:MM or digits)
+        import re
+        has_time = bool(re.search(r"\d{1,2}:\d{2}", reply))
+        print(f"   Time reply: {reply[:80]}... | has_time={has_time}\n")
+    except Exception as e:
+        print(f"   Time test failed: {e}\n")
 
     print("=== Verify complete ===")
     print("Recommended manual checks:")

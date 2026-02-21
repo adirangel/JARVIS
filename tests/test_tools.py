@@ -45,6 +45,14 @@ def test_try_open_browser():
         assert try_open_browser_from_intent("search for weather", tool_router) is True
 
 
+def test_extract_location_time_query():
+    """'What time is it?' must not extract 'is it' as location (use default)."""
+    from agent.tools import extract_location_for_time_query
+    assert extract_location_for_time_query("What time is it?") is None
+    assert extract_location_for_time_query("current time in Tokyo") == "Tokyo"
+    assert extract_location_for_time_query("time in Be'er Sheva") == "Be'er Sheva"
+
+
 def test_get_current_time_beer_sheva():
     """Be'er Sheva and variants should return Asia/Jerusalem time."""
     from agent.tools import get_current_time_execute

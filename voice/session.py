@@ -24,6 +24,7 @@ DEFAULT_END_COMMANDS = (
     "good bye",
     "stop",
     "end session",
+    "end conversation",
     "that's all",
     "cancel",
 )

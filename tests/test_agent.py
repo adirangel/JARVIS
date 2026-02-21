@@ -28,10 +28,9 @@ def test_graph_creation():
     from agent.graph import create_jarvis_graph
     config = {
         "llm": {
-            "conversation_model": "qwen3:4b",
-            "tool_model": "qwen3:4b",
+            "model": "qwen3:4b",
             "host": "http://localhost:11434",
-        },
+        }
     }
     try:
         graph = create_jarvis_graph(config, checkpointer_path="data/test_checkpoints")
@@ -47,6 +46,14 @@ def test_time_query_no_false_positives():
     assert _is_time_query("Are you there now?") is False
     assert _is_time_query("what time is it?") is True
     assert _is_time_query("time") is True
+
+
+def test_time_query_no_false_positives_population():
+    """'How many people live right now in X' must NOT be time query - it's population."""
+    from agent.graph import _is_time_query
+    assert _is_time_query("How many people live right now in Be'er Sheva, Israel?") is False
+    assert _is_time_query("I asked you how many people live right now in Be'er Sheva Israel.") is False
+    assert _is_time_query("I didn't ask for the time, I asked how many people live there.") is False
 
 
 def test_simple_query_detection():
@@ -86,7 +93,7 @@ def test_time_validator():
 def test_has_fastpath_node():
     """Graph has FastPath node for simple commands (no tools)."""
     from agent.graph import create_jarvis_graph
-    config = {"llm": {"conversation_model": "qwen3:4b", "tool_model": "qwen3:4b", "host": "http://localhost:11434"}}
+    config = {"llm": {"model": "qwen3:4b", "host": "http://localhost:11434"}}
     try:
         graph = create_jarvis_graph(config, checkpointer_path="data/test_checkpoints")
         # LangGraph compiled graph exposes nodes
@@ -104,3 +111,23 @@ def test_no_truncation_when_max_words_zero():
 
     text = "One two three four five six seven."
     assert _truncate_words(text, max_words=0) == text
+
+
+def test_context_tracking():
+    """Context tracking: reset, add, get, format."""
+    from agent.timing_context import (
+        reset_session_tokens,
+        add_tokens,
+        get_session_tokens,
+        get_context_status,
+    )
+    reset_session_tokens()
+    assert get_session_tokens() == 0
+    add_tokens(100, 50)
+    add_tokens(200, 80)
+    assert get_session_tokens() == 430
+    disp, is_warn = get_context_status({"context": {"max_tokens": 32000, "warning_threshold": 0.85}})
+    assert "430" in disp
+    assert "32,000" in disp
+    assert is_warn is False
+    reset_session_tokens()

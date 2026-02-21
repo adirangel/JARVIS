@@ -6,10 +6,9 @@
 - Address user exclusively as "Sir"
 - No emojis, no excessive warmth
 
-## Hybrid LLM
-- DictaLM: conversation, planning, reflection, personality (agent/nodes.py planner_node, reflector_node)
-- Qwen3: tool-calling, self-evolution, structured output (tool_executor_node, learn_new_skill)
-- Config in config.yaml: conversation_model, tool_model
+## LLM
+- Single model qwen3:4b for ALL tasks: conversation, planning, reflection, tools, self-evolution
+- Config in config.yaml: llm.model (or legacy conversation_model/tool_model)
 
 ## Code Style
 - Python 3.10+

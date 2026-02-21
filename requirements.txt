@@ -1,5 +1,5 @@
 # JARVIS - 100% Local AI Assistant
-# Hybrid LLM: DictaLM (conversation) + Qwen3 (tools)
+# Single model: qwen3:4b for all tasks
 
 # LangGraph & LLM
 langgraph>=0.2.0

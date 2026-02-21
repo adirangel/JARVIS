@@ -1,8 +1,8 @@
-"""LangGraph nodes - hybrid LLM routing.
+"""LangGraph nodes - single model (qwen3:4b) for all tasks.
 
-- Planner: DictaLM (conversation_model) - intent, planning, tool selection
-- Reflector: DictaLM (conversation_model) - final response with personality
-- Tool Executor: No LLM - executes tools; learn_new_skill uses Qwen3 (tool_model) for code gen
+- Planner: intent, planning, tool selection
+- Reflector: final response with Paul Bettany personality
+- Tool Executor: executes tools; learn_new_skill uses same model for code gen
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def listener_node(state: dict) -> dict:
 
 def fastpath_node(
     state: dict,
-    conversation_model: str,
+    model: str,
     base_url: str,
     system_prompt: str,
     memory: Optional[Any] = None,
@@ -61,7 +61,7 @@ def fastpath_node(
     llm_cfg = llm_config or {}
     t0 = time.perf_counter()
     llm = _get_llm(
-        conversation_model,
+        model,
         base_url,
         temperature=llm_cfg.get("reflector_temperature", 0.5),
         num_predict=llm_cfg.get("max_tokens", 128),
@@ -77,7 +77,7 @@ def fastpath_node(
             last_content = m.content if isinstance(m.content, str) else str(m.content)
             break
     mem_ctx = _get_memory_context(memory, last_content or "general")
-    personality = "CRITICAL: Stay in character. Paul Bettany JARVIS. Dry British wit. Address as Sir or אדוני."
+    personality = "CRITICAL: Stay in character. Paul Bettany JARVIS. Dry British wit. Address as Sir."
     system = SystemMessage(content=personality + "\n\n" + system_prompt + mem_ctx)
     trimmed = _trim_messages(messages, max_turns=llm_cfg.get("context_window", 6))
     msgs = [system] + list(trimmed)
@@ -127,17 +127,14 @@ def _trim_messages(messages: list, max_turns: int = 6) -> list:
 
 def planner_node(
     state: dict,
-    conversation_model: str,
-    tool_model: str,
+    model: str,
     base_url: str,
     system_prompt: str,
     tool_router: Any,
     memory: Optional[Any] = None,
     llm_config: Optional[dict] = None,
 ) -> dict:
-    """DictaLM: Decides intent, plans response, determines if tools needed.
-
-    Hybrid: DictaLM handles natural language understanding.
+    """Decides intent, plans response, determines if tools needed.
     Returns tool_calls if tools needed, else direct response plan.
     """
     from langchain_core.messages import HumanMessage, SystemMessage
@@ -146,7 +143,7 @@ def planner_node(
     llm_cfg = llm_config or {}
     t0 = time.perf_counter()
     llm = _get_llm(
-        conversation_model,
+        model,
         base_url,
         temperature=llm_cfg.get("planner_temperature", 0.5),
         num_predict=llm_cfg.get("planner_max_tokens", 512),
@@ -330,7 +327,7 @@ def time_validator_node(state: dict, tool_router: Any) -> dict:
                     )
             else:
                 # Still bad - inject witty error for reflector
-                err_msg = "My clocks appear to be conspiring against me again, Sir. Let me double-check..."
+                err_msg = "My apologies, Sir — my internal clock seems to be on holiday again."
                 updated_results[idx] = {"tool": "get_current_time", "result": err_msg, "args": args}
                 msg_idx = tool_msg_start + idx
                 if 0 <= msg_idx < len(updated_messages) and isinstance(updated_messages[msg_idx], ToolMessage):
@@ -346,19 +343,19 @@ def time_validator_node(state: dict, tool_router: Any) -> dict:
 
 def reflector_node(
     state: dict,
-    conversation_model: str,
+    model: str,
     base_url: str,
     system_prompt: str,
     memory: Optional[Any] = None,
     llm_config: Optional[dict] = None,
 ) -> dict:
-    """DictaLM: Formats final response with Paul Bettany personality. Streams if stream_callback in config."""
+    """Formats final response with Paul Bettany personality. Streams if stream_callback in config."""
     from langchain_core.messages import AIMessage, SystemMessage
 
     llm_cfg = llm_config or {}
     t0 = time.perf_counter()
     llm = _get_llm(
-        conversation_model,
+        model,
         base_url,
         temperature=llm_cfg.get("reflector_temperature", 0.5),
         num_predict=llm_cfg.get("max_tokens", 256),
@@ -377,7 +374,7 @@ def reflector_node(
             break
     mem_ctx = _get_memory_context(memory, last_content or "general")
     # Personality reminder: Paul Bettany JARVIS - dry British wit, address as Sir
-    personality_reminder = "CRITICAL: Stay in character. Paul Bettany JARVIS. Dry British wit. Address as Sir or אדוני."
+    personality_reminder = "CRITICAL: Stay in character. Paul Bettany JARVIS. Dry British wit. Address as Sir."
     system = SystemMessage(content=personality_reminder + "\n\n" + system_prompt + mem_ctx)
     trimmed = _trim_messages(messages, max_turns=llm_cfg.get("context_window", 10))
     msgs = [system] + list(trimmed)
@@ -411,7 +408,7 @@ def reflector_node(
 def heartbeat_node(
     state: dict,
     memory: Any,
-    conversation_model: str,
+    model: str,
     base_url: str,
     tts_callback: Optional[callable] = None,
 ) -> dict:
@@ -423,7 +420,7 @@ def heartbeat_node(
     if not pending and not reminders:
         return state
 
-    # Build summary for DictaLM
+    # Build summary for LLM
     summary_parts = []
     if pending:
         summary_parts.append(f"Pending tasks: {len(pending)}")
@@ -431,7 +428,7 @@ def heartbeat_node(
         summary_parts.append(f"Reminders: {len(reminders)}")
 
     from langchain_core.messages import HumanMessage, SystemMessage
-    llm = _get_llm(conversation_model, base_url)
+    llm = _get_llm(model, base_url)
     prompt = f"Sir has the following: {'; '.join(summary_parts)}. Provide a brief, witty one-sentence summary to speak aloud. Stay in character as JARVIS."
     try:
         response = llm.invoke([SystemMessage(content="You are JARVIS. Brief, dry wit. Address user as Sir."), HumanMessage(content=prompt)])
@@ -445,7 +442,7 @@ def heartbeat_node(
 
 def self_improve_node(
     state: dict,
-    tool_model: str,
+    model: str,
     base_url: str,
     skills_manager: Any,
 ) -> dict:

@@ -1,10 +1,10 @@
 # JARVIS Configuration
 # ====================
 # Goal profile: local-first, low-latency (<2s target), continuous conversation.
+# Single model: qwen3:4b for ALL tasks (conversation, planning, reflection, tools, self-evolution).
 
 llm:
-  conversation_model: "aminadaven/dictalm2.0-instruct:q5_K_M"
-  tool_model: "qwen3:4b"
+  model: "qwen3:4b"
   host: "http://localhost:11434"
   temperature: 0.7
   max_tokens: 256
@@ -46,7 +46,7 @@ voice:
   push_to_talk_seconds: 5
 
   silence_timeout: 15
-  session_end_commands: ["goodbye", "stop", "end session"]
+  session_end_commands: ["goodbye", "stop", "end session", "end conversation"]
   listening_prompt: "Listening, Sir."
   wake_ack_prompt: ""
   session_end_prompt: "Very well, Sir. Standing by."
@@ -60,8 +60,8 @@ voice:
 
 wake_word:
   models: ["hey_jarvis_v0.1"]
-  threshold: 0.15  # Legacy alias - use wake_confidence if set
-  wake_confidence: 0.15  # 0.7-0.85 reduces false positives (higher = stricter)
+  threshold: 0.75  # Legacy alias - use wake_confidence if set
+  wake_confidence: 0.78  # 0.75-0.85 reduces false positives (higher = stricter)
   device: null
   cooldown_seconds: 3
   noise_gate_rms: 0.005
@@ -93,6 +93,12 @@ debug: false
 log_level: "INFO"
 timing: false
 show_latency: true
+
+# Context size tracking (tokens per session)
+context:
+  max_tokens: 32000
+  warning_threshold: 0.85
+  show_after_each_turn: true
 
 # Ollama recommendation:
 # ollama serve --flash-attn --gpu-layers -1

@@ -1,7 +1,7 @@
 """JARVIS - 100% Local AI Assistant.
 
 System tray app. Wake word -> active voice session -> STT -> agent -> TTS.
-Hybrid LLM: DictaLM (conversation/planner/reflector) + Qwen3 (tools/self-evolution).
+Single model: qwen3:4b for ALL tasks (conversation, planning, reflection, tools, self-evolution).
 """
 
 from __future__ import annotations
@@ -257,11 +257,11 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
             from langchain_core.messages import HumanMessage, SystemMessage
 
             llm_cfg = config.get("llm", {})
-            conv_model = llm_cfg.get("conversation_model", "aminadaven/dictalm2.0-instruct:q5_K_M")
+            model = llm_cfg.get("model") or llm_cfg.get("conversation_model") or llm_cfg.get("tool_model", "qwen3:4b")
             base_url = llm_cfg.get("host", "http://localhost:11434")
             if base_url and not base_url.startswith("http"):
                 base_url = f"http://{base_url}"
-            llm = ChatOllama(model=conv_model, base_url=base_url, temperature=0.7)
+            llm = ChatOllama(model=model, base_url=base_url, temperature=0.7)
             resp = llm.invoke(
                 [
                     SystemMessage(content="You are JARVIS. Brief, dry wit. Address user as Sir."),
@@ -384,6 +384,7 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
             attempts = [lang]
 
             last_reason = "empty"
+            t_stt = time.perf_counter()
             for lang in attempts:
                 details = stt.transcribe_detailed(tmp_path, language=lang, vad_filter=use_vad)
                 text = (details.get("text") or "").strip()
@@ -396,6 +397,10 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                     details["text"] = text
                     details["audio_duration"] = duration
                     details["rms"] = rms
+                    if (config.get("timing", False) or config.get("debug", False)) and verbose:
+                        stt_ms = (time.perf_counter() - t_stt) * 1000
+                        from agent.timing_context import log_timing
+                        log_timing("STT", stt_ms, config, verbose=True)
                     return details
                 last_reason = reason or "invalid"
             # Don't show "Transcript rejected" to user - it's internal/debug only
@@ -414,6 +419,9 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
             _speak(thinking_prompt)
 
         stream_tts = bool(vc.get("stream_tts", True))
+        show_timing = config.get("timing", False) or config.get("debug", False)
+        t_turn_start = time.perf_counter()
+
         if stream_tts:
             on_chunk, flush, put_remainder, start_consumer, stop_consumer = _make_streaming_tts_callback(
                 tts,
@@ -443,16 +451,45 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                 config=config,
                 memory=memory,
             )
+            t_tts_start = time.perf_counter()
             _speak(response)
+            if show_timing:
+                tts_ms = (time.perf_counter() - t_tts_start) * 1000
+                from agent.timing_context import log_timing
+                log_timing("TTS+Playback", tts_ms, config, verbose=verbose)
 
         memory.save_interaction(user_text, response)
         if verbose:
             lat_str = f" [{latency:.1f}s]" if config.get("show_latency", True) else ""
             print(_display_text(response) + lat_str, flush=True)
+
+        # Context tracking: show after each turn
+        ctx_cfg = config.get("context", {})
+        if ctx_cfg.get("show_after_each_turn"):
+            from agent.timing_context import get_context_status
+            disp, is_warning = get_context_status(config)
+            if verbose:
+                print(disp, flush=True)
+            # Speak context if enabled (brief)
+            if ctx_cfg.get("speak_context", False):
+                _speak(disp)
+            if is_warning:
+                warning = "Sir, we're approaching my recollection limit. Shall I summarize and refresh?"
+                if verbose:
+                    print(warning, flush=True)
+                _speak(warning)
+
+        if show_timing:
+            total_ms = (time.perf_counter() - t_turn_start) * 1000
+            from agent.timing_context import log_timing
+            log_timing("TurnTotal", total_ms, config, verbose=verbose)
+
         return response, latency
 
     def _run_active_session() -> None:
         session.activate()
+        from agent.timing_context import reset_session_tokens
+        reset_session_tokens()
         turn_index = 0
         wake_ack = vc.get("wake_ack_prompt", "")
         if wake_ack:

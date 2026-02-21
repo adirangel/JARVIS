@@ -1,10 +1,9 @@
 # JARVIS Configuration - Copy to config.yaml and customize
 # =========================================================
 
-# Hybrid LLM (DictaLM: planner/reflector, Qwen3: tools/self-evolution)
+# Single model: qwen3:4b for ALL tasks (conversation, planning, reflection, tools, self-evolution)
 llm:
-  conversation_model: "aminadaven/dictalm2.0-instruct:q5_K_M"
-  tool_model: "qwen3:4b"
+  model: "qwen3:4b"
   host: "http://localhost:11434"
   temperature: 0.7
   max_tokens: 256
@@ -47,7 +46,7 @@ voice:
 
   # Active session behavior
   silence_timeout: 15
-  session_end_commands: ["goodbye", "stop", "end session"]
+  session_end_commands: ["goodbye", "stop", "end session", "end conversation"]
   listening_prompt: "Listening, Sir."
   wake_ack_prompt: ""
   session_end_prompt: "Very well, Sir. Standing by."
@@ -100,3 +99,9 @@ debug: false
 log_level: "INFO"
 timing: false
 show_latency: true
+
+# Context size tracking (tokens per session)
+context:
+  max_tokens: 32000
+  warning_threshold: 0.85
+  show_after_each_turn: true

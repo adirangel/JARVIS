@@ -1,11 +1,11 @@
-"""LangGraph state machine with hybrid LLM routing.
+"""LangGraph state machine with single-model routing.
 
-Hybrid routing (per config.yaml):
+Single model: qwen3:4b for ALL tasks (conversation, planning, reflection, tools, self-evolution).
 - FastPath: Simple commands (no tools) -> direct Reflector (skips Planner)
-- Planner: DictaLM - intent, planning, tool selection
-- Reflector: DictaLM - final response with Paul Bettany personality
-- Tool Executor: No LLM - executes tool calls from planner
-- learn_new_skill: Qwen3 (tool_model) via skills_manager for code generation
+- Planner: intent, planning, tool selection
+- Reflector: final response with Paul Bettany personality
+- Tool Executor: executes tool calls from planner
+- learn_new_skill: via skills_manager for code generation
 
 SQLite checkpointer for persistence.
 """
@@ -48,8 +48,7 @@ def create_jarvis_graph(
 
     config = config or {}
     llm_cfg = config.get("llm", {})
-    conv_model = llm_cfg.get("conversation_model", "aminadaven/dictalm2.0-instruct:q5_K_M")
-    tool_model = llm_cfg.get("tool_model", "qwen3:4b")
+    model = llm_cfg.get("model") or llm_cfg.get("conversation_model") or llm_cfg.get("tool_model", "qwen3:4b")
     base_url = llm_cfg.get("host", "http://localhost:11434").replace("http://", "").replace("https://", "")
     if not base_url.startswith("http"):
         base_url = f"http://{base_url}"
@@ -57,13 +56,11 @@ def create_jarvis_graph(
     tool_router = create_tool_router(config)
 
     # Node factories (partial application for config)
-    # Planner: DictaLM - intent, planning, tool selection
     def make_planner(state: dict) -> dict:
         from agent.nodes import planner_node
         return planner_node(
             state,
-            conversation_model=conv_model,
-            tool_model=tool_model,
+            model=model,
             base_url=base_url,
             system_prompt=PLANNER_PROMPT,
             tool_router=tool_router,
@@ -86,24 +83,22 @@ def create_jarvis_graph(
         from agent.nodes import time_validator_node
         return time_validator_node(state, tool_router=tool_router)
 
-    # Reflector: DictaLM - final response with Paul Bettany personality
     def make_reflector(state: dict) -> dict:
         from agent.nodes import reflector_node
         return reflector_node(
             state,
-            conversation_model=conv_model,
+            model=model,
             base_url=base_url,
             system_prompt=REFLECTOR_PROMPT,
             memory=memory,
             llm_config=llm_cfg,
         )
 
-    # FastPath node: simple commands (no tools) -> direct reflector (skips planner)
     def make_fastpath(state: dict) -> dict:
         from agent.nodes import fastpath_node
         return fastpath_node(
             state,
-            conversation_model=conv_model,
+            model=model,
             base_url=base_url,
             system_prompt=REFLECTOR_PROMPT,
             memory=memory,
@@ -217,20 +212,35 @@ _SIMPLE_PATTERNS = (
 # Time query patterns - ALWAYS use get_current_time tool, NEVER let model guess
 _TIME_PATTERNS = (
     "what time", "current time", "time in ", "time now", "what's the time",
-    "time right now", "the time", "now in ", "hora en", "quelle heure",
+    "time right now", "the time", "hora en", "quelle heure",
+    "what time is it", "time is it",
+)
+# "now in" removed - triggers false positives ("people living right now in X" = population)
+
+# NON-time intent: if present, query is NOT about time (e.g. population, demographics)
+_NON_TIME_INTENT = (
+    "how many people", "how many live", "population", "inhabitants", "people live",
+    "live in", "live there", "residents", "demographics", "didn't ask for the time",
+    "didn't want the time", "not the time", "i asked for", "i wanted",
 )
 
-# Correction patterns - user says previous answer was wrong
+# Correction patterns - user says previous answer was wrong (re-fetch time)
+# Exclude: "didn't ask for the time" = user wanted something else, NOT time correction
 _CORRECTION_PATTERNS = ("wrong", "incorrect", "check again", "search the web", "look it up", "double-check", "that's not right")
+_ANTI_TIME_CORRECTION = ("didn't ask for the time", "didn't want the time", "not the time", "i asked for", "i wanted")
 
 
 def _is_time_query(text: str) -> bool:
-    """Detect time queries - MUST use get_current_time, never fastpath or planner guess."""
+    """Detect time queries - MUST use get_current_time, never fastpath or planner guess.
+    Excludes queries with non-time intent (population, demographics, etc.)."""
     import re
     t = text.strip().lower()
+    # Non-time intent overrides - e.g. "how many people live right now in X" = population
+    if any(p in t for p in _NON_TIME_INTENT):
+        return False
     if any(p in t for p in _TIME_PATTERNS):
         return True
-    # Single-word "time" at end only - "now" alone is ambiguous ("can you hear me now?" is NOT a time query)
+    # Single-word "time" at end only - "now" alone is ambiguous
     if re.search(r"\btime\s*\?*\s*$", t) and len(t) < 30:
         return True
     return False
@@ -262,7 +272,7 @@ def invoke_jarvis(
 
     cfg = config or {}
     llm_cfg = cfg.get("llm", {})
-    conv_model = llm_cfg.get("conversation_model", "aminadaven/dictalm2.0-instruct:q5_K_M")
+    model = llm_cfg.get("model") or llm_cfg.get("conversation_model") or llm_cfg.get("tool_model", "qwen3:4b")
     base_url = llm_cfg.get("host", "http://localhost:11434")
     if base_url and not base_url.startswith("http"):
         base_url = f"http://{base_url}"
@@ -305,7 +315,11 @@ def invoke_jarvis(
                 stream_callback(response)
             return _truncate_words(response, max_words), latency
         # Fall through to graph on error
-    elif any(p in user_message.strip().lower() for p in _CORRECTION_PATTERNS) and memory:
+    elif (
+        any(p in user_message.strip().lower() for p in _CORRECTION_PATTERNS)
+        and not any(a in user_message.strip().lower() for a in _ANTI_TIME_CORRECTION)
+        and memory
+    ):
         # "That's wrong, check the web" - try time bypass with location from last exchange
         t_start = time.perf_counter()
         result = _do_time_bypass(user_message)
@@ -330,7 +344,7 @@ def invoke_jarvis(
             if memory and hasattr(memory, "build_context"):
                 mem_ctx = "\n\n" + memory.build_context(user_message) if memory.build_context(user_message) else ""
             llm = ChatOllama(
-                model=conv_model,
+                model=model,
                 base_url=base_url,
                 temperature=0.5,
                 model_kwargs={"num_predict": 128, "num_ctx": llm_cfg.get("num_ctx_reflector", 4096)},
@@ -340,6 +354,11 @@ def invoke_jarvis(
                 HumanMessage(content=user_message),
             ])
             out = resp.content if hasattr(resp, "content") else str(resp)
+            # Context tracking for fast path
+            if cfg.get("context", {}).get("show_after_each_turn"):
+                from agent.timing_context import add_tokens
+                meta = getattr(resp, "response_metadata", None) or {}
+                add_tokens(int(meta.get("prompt_eval_count", 0)), int(meta.get("eval_count", 0)))
             latency = time.perf_counter() - t_start
             if show_timing:
                 print(f"[Timing] FastPath: {latency * 1000:.0f}ms", flush=True)
@@ -351,6 +370,16 @@ def invoke_jarvis(
     from agent.nodes import _stream_callback, _timing_callback
     token = _stream_callback.set(stream_callback) if stream_callback else None
     timing_token = _timing_callback.set(_on_timing) if show_timing else None
+
+    # Token tracking callback for context display
+    ctx_cfg = cfg.get("context", {})
+    callbacks = []
+    if ctx_cfg.get("show_after_each_turn"):
+        from agent.timing_context import TokenTrackingCallback
+        callbacks.append(TokenTrackingCallback(cfg))
+    if callbacks:
+        invoke_config["callbacks"] = callbacks
+
     t_start = time.perf_counter()
     try:
         result = graph.invoke(
@@ -360,6 +389,15 @@ def invoke_jarvis(
         response = result.get("final_response", "") or (
             result.get("messages", [])[-1].content if result.get("messages") else ""
         )
+        # Fallback: extract token counts from result messages (callback may not propagate)
+        if ctx_cfg.get("show_after_each_turn"):
+            from agent.timing_context import add_tokens
+            for msg in result.get("messages", []):
+                meta = getattr(msg, "response_metadata", None) or {}
+                p = int(meta.get("prompt_eval_count", 0))
+                e = int(meta.get("eval_count", 0))
+                if p or e:
+                    add_tokens(p, e)
     finally:
         if token is not None:
             _stream_callback.reset(token)

@@ -1,7 +1,7 @@
 """Dynamic tool loader - base tools + skills/ directory.
 
 Tools are registered for LangGraph/Ollama function calling.
-Hybrid LLM: Tool Executor node uses Qwen3 for tool calls.
+Single model (qwen3:4b) for all tasks including tool calls.
 """
 
 from __future__ import annotations
@@ -257,7 +257,7 @@ _CITY_TO_TZ = {
 
 # Words that indicate the extracted "location" is garbage (not a place name)
 _BAD_LOCATION_WORDS = frozenset(
-    "not too wrong check web again right now tell me return back real answer".split()
+    "not too wrong check web again right now tell me return back real answer is it".split()
 )
 
 
@@ -276,7 +276,7 @@ def extract_location_for_time_query(text: str) -> Optional[str]:
         words = set(loc.lower().split())
         if words & _BAD_LOCATION_WORDS or len(loc) < 2:
             return None
-        if loc.lower() not in ("it", "is", "there", "the"):
+        if loc.lower() not in ("it", "is", "there", "the", "is it"):
             return loc
     # "time X" or "now X" (short)
     m = re.search(r"(?:time|now)\s+([A-Za-z\s'-]+?)(?:\s*\?|$)", t)
@@ -411,11 +411,12 @@ def _time_from_chrome(location: str) -> Optional[str]:
 
 
 def _time_from_web_search(location: str) -> Optional[str]:
-    """Fallback: search for current time when API fails."""
+    """Fallback: structured web search for current time when API fails.
+    Uses site:time.is OR site:timeanddate.com for reliable extraction."""
     try:
         from ddgs import DDGS
         loc_for_search = "Beersheba, Israel" if "beer" in location.lower() and "sheva" in location.lower() else location
-        query = f"current time in {loc_for_search}"
+        query = f"current time in {loc_for_search} site:time.is OR site:timeanddate.com"
         results = list(DDGS().text(query, max_results=5, region="us-en"))
         text = " ".join(r.get("body", "") or "" for r in results) + " " + " ".join(r.get("title", "") or "" for r in results)
         m = re.search(r"(\d{1,2}):(\d{2})\s*(AM|PM)", text, re.I)

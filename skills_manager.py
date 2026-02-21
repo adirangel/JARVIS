@@ -53,7 +53,7 @@ def learn_new_skill(
     """
     config = config or {}
     llm_cfg = config.get("llm", {})
-    tool_model = llm_cfg.get("tool_model", "qwen3:4b")
+    tool_model = llm_cfg.get("model") or llm_cfg.get("tool_model") or llm_cfg.get("conversation_model", "qwen3:4b")
     base_url = llm_cfg.get("host", "http://localhost:11434")
     if base_url and not base_url.startswith("http"):
         base_url = f"http://{base_url}"
@@ -120,7 +120,7 @@ Output ONLY the Python code, no markdown or explanation."""
     except Exception:
         pass
 
-    return f"Skill validated: {skill_path.name}. Say 'Jarvis, approve the new skill' or 'אשר את המיומנות' to register."
+    return f"Skill validated: {skill_path.name}. Say 'Jarvis, approve the new skill' to register."
 
 
 def approve_new_skill(tool_router: Optional[Any] = None) -> str:
