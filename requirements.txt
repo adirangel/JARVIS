@@ -1,0 +1,41 @@
+# JARVIS - 100% Local AI Assistant
+# Single model: qwen3:4b for all tasks
+
+# LangGraph & LLM
+langgraph>=0.2.0
+langgraph-checkpoint-sqlite
+langchain-ollama>=0.2.0
+langchain-core>=0.3.0
+
+# Voice
+faster-whisper
+piper-tts
+huggingface_hub
+openwakeword
+sounddevice
+soundfile
+numpy
+webrtcvad-wheels
+
+# System tray & scheduling
+pystray
+Pillow
+apscheduler
+
+# Web & search
+ddgs
+beautifulsoup4
+playwright
+
+# Computer control
+pyautogui
+
+# Memory
+chromadb
+ollama
+
+# Config & utils
+PyYAML
+python-dotenv
+python-bidi
+pytz
