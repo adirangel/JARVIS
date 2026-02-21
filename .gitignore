@@ -54,7 +54,7 @@ _backup/
 .vscode/
 *.swp
 *.swo
-
+.cursorrules
 # Logs
 *.log
 logs/

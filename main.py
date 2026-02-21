@@ -27,7 +27,6 @@ if str(ROOT) not in sys.path:
 
 def load_config() -> dict:
     import yaml
-from typing import Any, Dict
 
     cfg = ROOT / "config.yaml"
     example = ROOT / "config.example.yaml"
@@ -35,9 +34,7 @@ from typing import Any, Dict
     config = {}
     if path.exists():
         with open(path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-        # Validate configuration
-        config = validate_config(config) or {}
+            config = yaml.safe_load(f) or {}
     # Patch ddgs to use fixed Chrome (not random).
     try:
         from agent.ddgs_patch import apply_ddgs_patch
