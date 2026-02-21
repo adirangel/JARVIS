@@ -133,6 +133,55 @@ OPEN_BROWSER_TOOL = _to_ollama_tool(
 )
 
 
+def browser_send_message_execute(url: str = "", message: str = "", site: str = "") -> str:
+    """Open a URL in browser and type a message into the page. Use when user says 'send a message to X', 'type on Grok', etc."""
+    try:
+        import webbrowser
+        import time
+
+        # Resolve URL from site name if needed
+        target_url = url.strip() if url else ""
+        if not target_url and site:
+            site_lower = site.strip().lower()
+            target_url = KNOWN_SITES.get(site_lower, f"https://{site_lower.replace(' ', '')}.com")
+        if not target_url:
+            return "Error: Provide url or site (e.g. grok, youtube)."
+
+        if not target_url.startswith(("http://", "https://")):
+            target_url = "https://" + target_url
+
+        webbrowser.open(target_url)
+        # Give browser time to open and user to focus the input field
+        time.sleep(6)
+
+        if message:
+            try:
+                import pyautogui
+                # Type the message (ASCII-safe; for special chars use simple alternatives)
+                safe_msg = message.replace("\n", " ").strip()[:500]
+                pyautogui.write(safe_msg, interval=0.03)
+                return f"Opened {target_url} and typed: {safe_msg[:80]}{'...' if len(safe_msg) > 80 else ''}"
+            except ImportError:
+                return f"Opened {target_url}. (pyautogui not installed - could not type message.)"
+        return f"Opened {target_url}."
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+BROWSER_SEND_MESSAGE_TOOL = _to_ollama_tool(
+    "browser_send_message",
+    "Open a website and type a message into it. Use when user asks to 'send a message to X', 'type on Grok', 'write a message on Chrome to grok.com', 'tell them that...'. Executes the action - does not just suggest text.",
+    {
+        "properties": {
+            "url": {"type": "string", "description": "Full URL e.g. https://grok.com"},
+            "site": {"type": "string", "description": "Site name if URL unknown: grok, youtube, etc."},
+            "message": {"type": "string", "description": "The message to type (e.g. 'I am JARVIS, at your service.')"},
+        },
+        "required": ["message"],
+    },
+)
+
+
 # --- Web Search (ddgs / duckduckgo-search) ---
 def web_search_execute(query: str, max_results: int = 5) -> str:
     try:
@@ -195,6 +244,8 @@ _CITY_TO_TZ = {
     "dubai": "Asia/Dubai",
     "singapore": "Asia/Singapore",
     "hong kong": "Asia/Hong_Kong",
+    "thailand": "Asia/Bangkok",
+    "bangkok": "Asia/Bangkok",
     "mumbai": "Asia/Kolkata",
     "toronto": "America/Toronto",
     "vancouver": "America/Vancouver",
@@ -292,6 +343,8 @@ _CITY_TO_TIME_IS = {
     "dubai": "Dubai",
     "singapore": "Singapore",
     "hong kong": "Hong_Kong",
+    "thailand": "Bangkok",
+    "bangkok": "Bangkok",
     "mumbai": "Mumbai",
     "toronto": "Toronto",
     "vancouver": "Vancouver",
@@ -632,7 +685,7 @@ LEARN_NEW_SKILL_TOOL = _to_ollama_tool(
 # --- Approve New Skill (register pending skill from learn_new_skill) ---
 APPROVE_NEW_SKILL_TOOL = _to_ollama_tool(
     "approve_new_skill",
-    "When user says 'approve the new skill' or 'אשר את המיומנות': register the pending skill from learn_new_skill.",
+    "When user says 'approve the new skill': register the pending skill from learn_new_skill.",
     {"properties": {}, "required": []},
 )
 
@@ -684,6 +737,14 @@ class ToolRouter:
         def _open_browser(**kw):
             return open_browser_execute(kw.get("url", ""), kw.get("search_query", ""))
         self.register("open_browser", _open_browser, OPEN_BROWSER_TOOL)
+
+        def _browser_send_message(**kw):
+            return browser_send_message_execute(
+                url=kw.get("url", ""),
+                message=kw.get("message", ""),
+                site=kw.get("site", ""),
+            )
+        self.register("browser_send_message", _browser_send_message, BROWSER_SEND_MESSAGE_TOOL)
         self.register("web_search", lambda **kw: web_search_execute(kw.get("query", ""), kw.get("max_results", max_results)), WEB_SEARCH_TOOL)
         self.register(
             "get_current_time",

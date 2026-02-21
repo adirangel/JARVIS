@@ -56,6 +56,17 @@ def test_get_current_time_beer_sheva():
         assert "UTC" in result or "IST" in result or "from web" in result, f"Expected timezone in {result}"
 
 
+def test_get_current_time_thailand():
+    """Thailand should return Asia/Bangkok (ICT), NOT IST (Israel)."""
+    from agent.tools import get_current_time_execute
+    import re
+    result = get_current_time_execute("Thailand")
+    assert "AM" in result or "PM" in result
+    assert re.search(r"\d{1,2}:\d{2}", result)
+    assert "IST" not in result, f"Thailand must not return IST (Israel): {result}"
+    assert "UTC" in result or "ICT" in result or "from web" in result
+
+
 def test_get_current_time_tokyo():
     """Tokyo should return Asia/Tokyo time."""
     from agent.tools import get_current_time_execute
