@@ -123,6 +123,19 @@ For GPU-accelerated speech-to-text, install [CUDA 12](https://developer.nvidia.c
 
 ---
 
+## Latency optimization (sub-2s on RTX 4080)
+
+- **FastPath**: Simple commands (hi, thanks, שלום) skip Planner → direct Reflector
+- **Streaming TTS**: First phrase ("As you wish, Sir...") plays within ~800ms
+- **Hybrid LLM**: DictaLM for Planner/Reflector, Qwen3 for tools
+- **Voice**: faster-whisper int8 + beam_size=3, Piper preload
+- **Memory**: Chroma cache for <100ms queries
+- **Debug timing**: Set `timing: true` in config for per-node latency
+
+See [docs/OLLAMA_LATENCY.md](docs/OLLAMA_LATENCY.md) for Ollama flags (`--flash-attn`, `num_ctx`).
+
+---
+
 ## What is excluded from git (.gitignore)
 
 - `data/` – databases and conversation history

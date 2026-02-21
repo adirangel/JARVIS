@@ -1,4 +1,4 @@
-"""ChromaDB vector store for semantic memory search."""
+"""ChromaDB vector store for semantic memory search. Target: queries <100ms."""
 
 from __future__ import annotations
 
@@ -22,6 +22,8 @@ class VectorStore:
         embedding_model: str = "nomic-embed-text",
         collection_name: str = "jarvis_memory",
         ollama_host: str = "http://localhost:11434",
+        cache_recent: bool = True,
+        max_cache_size: int = 50,
     ):
         if not CHROMADB_AVAILABLE:
             raise ImportError("chromadb is required. pip install chromadb")
@@ -37,6 +39,9 @@ class VectorStore:
         )
         self._embedding_model = embedding_model
         self._ollama_host = ollama_host
+        self._cache_recent = cache_recent
+        self._cache: dict[str, list[dict]] = {}
+        self._cache_max = max_cache_size
 
     def _get_embedding(self, text: str) -> list[float]:
         import ollama
@@ -70,12 +75,18 @@ class VectorStore:
     def search_similar(
         self, query: str, max_results: int = 5, min_score: float = 0.3
     ) -> list[dict]:
+        t0 = time.perf_counter()
         if self._collection.count() == 0:
             return []
+        # Cache: return cached results for repeated queries (instant, <100ms target)
+        cache_key = f"{query[:80]}:{max_results}"
+        if self._cache_recent and cache_key in self._cache:
+            return self._cache[cache_key]
         query_embedding = self._get_embedding(query)
+        n = min(max_results, self._collection.count(), 10)  # Cap for speed
         results = self._collection.query(
             query_embeddings=[query_embedding],
-            n_results=min(max_results, self._collection.count()),
+            n_results=n,
         )
         matches = []
         for i in range(len(results["ids"][0])):
@@ -88,6 +99,12 @@ class VectorStore:
                     "metadata": results["metadatas"][0][i],
                     "score": score,
                 })
+        # Cache recent results (evict oldest if over limit)
+        if self._cache_recent and matches:
+            if len(self._cache) >= self._cache_max:
+                k = next(iter(self._cache))
+                del self._cache[k]
+            self._cache[cache_key] = matches
         return matches
 
     def count(self) -> int:

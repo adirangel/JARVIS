@@ -72,16 +72,36 @@ def start_heartbeat(
     llm_invoke: Optional[Callable[[str], str]] = None,
     interval_minutes: int = 30,
 ) -> Any:
-    """Start APScheduler heartbeat job."""
-    from apscheduler.schedulers.background import BackgroundScheduler
+    """Start APScheduler heartbeat in separate low-priority thread. Never blocks main response."""
+    import threading
 
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(
-        heartbeat_job,
-        "interval",
-        minutes=interval_minutes,
-        args=[memory, tts_speak],
-        kwargs={"llm_invoke": llm_invoke},
-    )
-    scheduler.start()
-    return scheduler
+    def _run_scheduler() -> None:
+        try:
+            import ctypes
+            # Windows: set thread to lowest priority so heartbeat never blocks main response
+            if hasattr(ctypes, "windll"):
+                try:
+                    ctypes.windll.kernel32.SetThreadPriority(
+                        ctypes.windll.kernel32.GetCurrentThread(),
+                        -2,  # THREAD_PRIORITY_LOWEST
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        from apscheduler.schedulers.background import BackgroundScheduler
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(
+            heartbeat_job,
+            "interval",
+            minutes=interval_minutes,
+            args=[memory, tts_speak],
+            kwargs={"llm_invoke": llm_invoke},
+        )
+        scheduler.start()
+        # Keep thread alive so scheduler reference isn't GC'd
+        threading.Event().wait()
+
+    t = threading.Thread(target=_run_scheduler, daemon=True)
+    t.start()
+    return t

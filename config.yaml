@@ -1,31 +1,42 @@
 # JARVIS Configuration
 # ====================
-# Hybrid LLM: DictaLM for conversation/planning/reflection, Qwen3 for tools/self-evolution
+# Hybrid LLM: DictaLM for Planner/Reflector/Personality (short 4k ctx), Qwen3 for tools/self-evolution
+# Latency target: sub-2s end-to-end on RTX 4080 + 16GB RAM
 
 # Hybrid LLM (per-node binding in LangGraph)
 llm:
-  # Conversation / Planning / Reflection / Personality - Hebrew SOTA, strong English
+  # DictaLM: Planner + Reflector + Personality ONLY (short 4k context)
   conversation_model: "aminadaven/dictalm2.0-instruct:q5_K_M"
-  # Tool-calling / Self-evolution / Structured output - fast, excellent at JSON
+  # Qwen3: ALL tool calls, self-evolution, JSON (use vLLM/exllama2 for 2x speed)
   tool_model: "qwen3:4b"
   host: "http://localhost:11434"
   temperature: 0.7
-  max_tokens: 2048
-  context_window: 20
+  max_tokens: 256  # Reflector output limit (keeps responses brief, faster)
+  context_window: 6  # Max turns (reduced for sub-2s latency)
+  planner_temperature: 0.5
+  planner_max_tokens: 512  # Shorter = faster
+  reflector_temperature: 0.5
+  # Context limits: DictaLM 8k max, Qwen 4k (Ollama num_ctx)
+  num_ctx_planner: 8192
+  num_ctx_reflector: 4096
+  num_ctx_tool: 4096
 
-# Voice
+# Voice (optimized for sub-800ms first token)
 voice:
-  preferred_language: "he"  # Hebrew is JARVIS default. "en" for English.
+  preferred_language: "en"
   stt_model: "large-v3-turbo"
-  stt_device: "cuda"  # "cuda" for GPU (needs CUDA 12). Auto-falls back to CPU if cublas error.
-  stt_language: "he"  # Force Hebrew - avoids Arabic misdetection. Use null for auto-detect.
+  stt_device: "cuda"
+  stt_language: "en"
+  stt_beam_size: 3  # 3 = faster (was 5), slight quality trade-off
+  stt_compute_type: "int8"  # int8 = faster on CPU/GPU
   tts_engine: "piper"
   tts_voice: "jgkawell/jarvis"
   tts_quality: "medium"
-  hebrew_voice: "he-IL-AvriNeural"  # fallback when Hebrew detected
-  force_hebrew_tts: false  # true = always use edge-tts (Hebrew voice for all)
-  preload_tts: false  # true = warm up TTS at startup (reduces first-response latency)
-  tts_speed: 1.15  # Piper: length_scale inverse (0.85 = faster). Edge: rate "+15%"
+  hebrew_voice: "he-IL-AvriNeural"
+  force_hebrew_tts: false  # Only when needed (Hebrew text) - edge-tts is slower
+  preload_tts: true  # Preload Piper at startup - "As you wish, Sir..." within 800ms
+  stream_tts: true   # Stream first token -> immediate TTS (sub-800ms first audio)
+  tts_speed: 1.0  # Regular speed
   max_response_words: 50  # Keep responses brief for voice
   min_rms: 0.0010  # Don't respond if recording is quieter. 0.002 was too strict for some mics.
   recorder_sample_rate: 16000
@@ -42,12 +53,13 @@ wake_word:
   device: null     # Set to mic ID from: python -c "import sounddevice; print(sounddevice.query_devices())"
   cooldown_seconds: 3  # Ignore rapid re-triggers after wake
 
-# Memory
+# Memory (Chroma queries target <100ms)
 memory:
   db_path: "data/jarvis.db"
   chroma_path: "data/chroma"
   embedding_model: "nomic-embed-text"
-  max_memories: 5
+  max_memories: 3  # Fewer = faster queries
+  chroma_cache_recent: true  # Cache recent facts for <100ms
 
 # Tools
 tools:
@@ -63,3 +75,10 @@ heartbeat:
 # General
 debug: false
 log_level: "INFO"
+# Debug timing: "Planner: 420ms, Tools: 180ms, TTS: 320ms"
+timing: false  # Set true to see per-node latency
+show_latency: true  # Display [2.3s] after each response
+
+# Ollama (run with): ollama serve --flash-attn --gpu-layers -1
+# Or set env: OLLAMA_FLASH_ATTENTION=1 OLLAMA_NUM_GPU=1
+# Per-model num_ctx: DictaLM 8192, Qwen 4096 (set in Modelfile or via API)

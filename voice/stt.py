@@ -31,25 +31,31 @@ except ImportError:
 
 
 class SpeechToText:
-    """STT via faster-whisper large-v3-turbo."""
+    """STT via faster-whisper large-v3-turbo. int8 + beam_size=3 for sub-2s latency."""
 
     def __init__(
         self,
         model_name: str = "large-v3-turbo",
         device: str = "cuda",
         language: Optional[str] = None,
+        beam_size: int = 3,
+        compute_type: Optional[str] = None,
     ):
         if not FASTER_WHISPER_AVAILABLE:
             raise ImportError("faster-whisper required. pip install faster-whisper")
         self._model_name = model_name
         self._device = device
-        self._language = language  # None = auto-detect
+        self._language = language
+        self._beam_size = beam_size
+        self._compute_type = compute_type
         self._model = None
 
     def _ensure_model(self) -> None:
         if self._model is None:
             device = self._device
-            compute_type = "float16" if device == "cuda" else "int8"
+            compute_type = self._compute_type
+            if compute_type is None:
+                compute_type = "int8" if device == "cuda" else "int8"  # int8 = faster on both
             try:
                 self._model = WhisperModel(
                     self._model_name,
@@ -79,7 +85,7 @@ class SpeechToText:
             segments, info = self._model.transcribe(
                 audio_path,
                 language=lang,
-                beam_size=5,
+                beam_size=self._beam_size,
                 vad_filter=False,  # VAD can sometimes filter out valid speech
             )
         except RuntimeError as e:
@@ -91,7 +97,7 @@ class SpeechToText:
                 segments, info = self._model.transcribe(
                     audio_path,
                     language=lang,
-                    beam_size=5,
+                    beam_size=self._beam_size,
                     vad_filter=False,
                 )
             else:

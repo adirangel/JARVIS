@@ -180,6 +180,69 @@ WEB_SEARCH_TOOL = _to_ollama_tool(
 )
 
 
+# --- Current Time (accurate, uses system clock + timezone) ---
+_CITY_TO_TZ = {
+    "beer sheva": "Asia/Jerusalem",
+    "beer sheba": "Asia/Jerusalem",
+    "be'er sheva": "Asia/Jerusalem",
+    "beersheba": "Asia/Jerusalem",
+    "jerusalem": "Asia/Jerusalem",
+    "tel aviv": "Asia/Jerusalem",
+    "tel aviv-yafo": "Asia/Jerusalem",
+    "haifa": "Asia/Jerusalem",
+    "london": "Europe/London",
+    "new york": "America/New_York",
+    "los angeles": "America/Los_Angeles",
+    "chicago": "America/Chicago",
+    "paris": "Europe/Paris",
+    "berlin": "Europe/Berlin",
+    "tokyo": "Asia/Tokyo",
+    "sydney": "Australia/Sydney",
+}
+
+
+def get_current_time_execute(location: str = "") -> str:
+    """Get the current date and time. Uses system clock - always accurate. Location is optional (city name for timezone)."""
+    from datetime import datetime
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:
+        try:
+            from backports.zoneinfo import ZoneInfo
+        except ImportError:
+            ZoneInfo = None
+    if ZoneInfo is None:
+        from datetime import timezone
+        return datetime.now(timezone.utc).strftime("%A, %B %d, %Y at %I:%M:%S %p UTC")
+    tz_name = "UTC"
+    if location and location.strip():
+        loc_lower = location.strip().lower().replace("'", "").replace("'", "")
+        tz_name = _CITY_TO_TZ.get(loc_lower)
+        if not tz_name:
+            # Try partial match
+            for city, tz in _CITY_TO_TZ.items():
+                if city in loc_lower or loc_lower in city:
+                    tz_name = tz
+                    break
+            else:
+                tz_name = "UTC"
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = ZoneInfo("UTC")
+    else:
+        tz = ZoneInfo("UTC")
+    now = datetime.now(tz)
+    return now.strftime("%A, %B %d, %Y at %I:%M:%S %p %Z")
+
+
+CURRENT_TIME_TOOL = _to_ollama_tool(
+    "get_current_time",
+    "Get the ACCURATE current date and time. ALWAYS use this for 'what time is it', 'current time', 'time in X' - never guess. Uses system clock. Location: city name (e.g. Be'er Sheva, London, New York) for timezone.",
+    {"properties": {"location": {"type": "string", "description": "City/location for timezone (e.g. Be'er Sheva, London). Empty = UTC."}}, "required": []},
+)
+
+
 # --- File Operations ---
 def file_ops_execute(action: str, path: str, content: str = "", allowed_dirs: Optional[list[str]] = None) -> str:
     path_obj = Path(os.path.expanduser(path)).resolve()
@@ -383,6 +446,7 @@ class ToolRouter:
             return open_browser_execute(kw.get("url", ""), kw.get("search_query", ""))
         self.register("open_browser", _open_browser, OPEN_BROWSER_TOOL)
         self.register("web_search", lambda **kw: web_search_execute(kw.get("query", ""), kw.get("max_results", max_results)), WEB_SEARCH_TOOL)
+        self.register("get_current_time", lambda **kw: get_current_time_execute(kw.get("location", "")), CURRENT_TIME_TOOL)
         self.register("file_operations", _file_ops, FILE_OPS_TOOL)
         self.register("system_command", _sys_cmd, SYSTEM_CMD_TOOL)
         self.register("computer_control", lambda **kw: computer_control_execute(kw.get("action", ""), **kw), COMPUTER_CONTROL_TOOL)

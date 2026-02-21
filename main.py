@@ -64,7 +64,7 @@ def create_tts(config: dict):
         hebrew_voice=v.get("hebrew_voice", "he-IL-AvriNeural"),
         speed=v.get("tts_speed", 1.15),
         force_hebrew_tts=v.get("force_hebrew_tts", False),
-        preload=v.get("preload_tts", False),
+        preload=v.get("preload_tts", True),  # Preload Piper - "As you wish, Sir..." within 800ms
     )
 
 
@@ -75,7 +75,66 @@ def create_stt(config: dict):
         model_name=v.get("stt_model", "large-v3-turbo"),
         device=v.get("stt_device", "cuda"),
         language=v.get("stt_language"),
+        beam_size=v.get("stt_beam_size", 3),
+        compute_type=v.get("stt_compute_type", "int8"),
     )
+
+
+def _make_streaming_tts_callback(tts, verbose: bool):
+    """Stream callback: buffer chunks, queue for immediate TTS on phrase boundaries (sub-800ms first audio)."""
+    import queue
+    buffer = []
+    text_queue = queue.Queue()
+    _stop_sentinel = object()
+
+    def _consumer() -> None:
+        import sounddevice as sd
+        import soundfile as sf
+        while True:
+            try:
+                item = text_queue.get(timeout=0.5)
+                if item is _stop_sentinel:
+                    break
+                if item and str(item).strip():
+                    try:
+                        wav_path = tts.synthesize(str(item).strip())
+                        data, sr = sf.read(wav_path)
+                        sd.play(data, sr)
+                        sd.wait()
+                    except Exception as e:
+                        if verbose:
+                            print(f"[Stream TTS] {e}", flush=True)
+            except queue.Empty:
+                continue
+
+    def on_chunk(chunk: str) -> None:
+        buffer.append(chunk)
+        s = "".join(buffer)
+        # Play on sentence end or after ~25 chars (first phrase like "As you wish, Sir.")
+        if any(s.rstrip().endswith(p) for p in (".", "!", "?", "。", "!")) or len(s) >= 25:
+            phrase = "".join(buffer).strip()
+            if phrase:
+                text_queue.put(phrase)
+            buffer.clear()
+
+    def flush() -> str:
+        remainder = "".join(buffer).strip()
+        buffer.clear()
+        return remainder
+
+    def put_remainder(text: str) -> None:
+        if text and text.strip():
+            text_queue.put(text.strip())
+
+    def start_consumer() -> threading.Thread:
+        t = threading.Thread(target=_consumer, daemon=True)
+        t.start()
+        return t
+
+    def stop_consumer() -> None:
+        text_queue.put(_stop_sentinel)
+
+    return on_chunk, flush, put_remainder, start_consumer, stop_consumer
 
 
 def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: bool = False, push_to_talk: bool = False):
@@ -214,20 +273,38 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                     print(f"[Wake] You said: {_display_text(text)}", flush=True)
                 try_open_browser_from_intent(text, tool_router)
                 max_words = config.get("voice", {}).get("max_response_words", 50)
-                response = invoke_jarvis(graph, text, stream_callback=None, max_words=max_words)
+                stream_tts = config.get("voice", {}).get("stream_tts", True)
+                if stream_tts:
+                    on_chunk, flush, put_remainder, start_consumer, stop_consumer = _make_streaming_tts_callback(tts, verbose)
+                    consumer_thread = start_consumer()
+                    try:
+                        response, latency = invoke_jarvis(
+                            graph, text,
+                            stream_callback=on_chunk,
+                            max_words=max_words, config=config, memory=memory,
+                        )
+                        put_remainder(flush())
+                    finally:
+                        stop_consumer()
+                        consumer_thread.join(timeout=30)
+                    # TTS already played via streaming - no duplicate
+                else:
+                    response, latency = invoke_jarvis(graph, text, stream_callback=None, max_words=max_words, config=config, memory=memory)
+                    wav_path = tts.synthesize(response)
+                    try:
+                        import sounddevice as sd
+                        import soundfile as sf
+                        data, sr = sf.read(wav_path)
+                        sd.play(data, sr)
+                        sd.wait()
+                    except Exception as e:
+                        if verbose:
+                            print(f"[Wake] TTS play error: {e}", flush=True)
+                show_latency = config.get("show_latency", True)
                 if verbose:
-                    print(_display_text(response), flush=True)
+                    lat_str = f" [{latency:.1f}s]" if show_latency else ""
+                    print(_display_text(response) + lat_str, flush=True)
                 memory.save_interaction(text, response)
-                wav_path = tts.synthesize(response)
-                try:
-                    import sounddevice as sd
-                    import soundfile as sf
-                    data, sr = sf.read(wav_path)
-                    sd.play(data, sr)
-                    sd.wait()
-                except Exception as e:
-                    if verbose:
-                        print(f"[Wake] TTS play error: {e}", flush=True)
                 import time as _t
                 if verbose:
                     _t.sleep(0.5)  # Let audio device settle before next listen
@@ -260,9 +337,11 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                     if verbose:
                         print(f"[Wake] You said: {_display_text(text2)}", flush=True)
                     try_open_browser_from_intent(text2, tool_router)
-                    response2 = invoke_jarvis(graph, text2, stream_callback=None, max_words=max_words)
+                    response2, latency2 = invoke_jarvis(graph, text2, stream_callback=None, max_words=max_words, config=config, memory=memory)
+                    show_latency = config.get("show_latency", True)
                     if verbose:
-                        print(_display_text(response2), flush=True)
+                        lat_str = f" [{latency2:.1f}s]" if show_latency else ""
+                        print(_display_text(response2) + lat_str, flush=True)
                     memory.save_interaction(text2, response2)
                     wav_path2 = tts.synthesize(response2)
                     try:
@@ -317,8 +396,10 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                     try_open_browser_from_intent(text, tool_router)
                     max_words = config.get("voice", {}).get("max_response_words", 50)
                     print("JARVIS: ", end="", flush=True)
-                    response = invoke_jarvis(graph, text, stream_callback=None, max_words=max_words)
-                    print(_display_text(response), flush=True)
+                    response, latency = invoke_jarvis(graph, text, stream_callback=None, max_words=max_words, config=config, memory=memory)
+                    show_latency = config.get("show_latency", True)
+                    lat_str = f" [{latency:.1f}s]" if show_latency else ""
+                    print(_display_text(response) + lat_str, flush=True)
                     memory.save_interaction(text, response)
                     print()  # blank line before next prompt
                     wav_path = tts.synthesize(response)
@@ -356,8 +437,10 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                     continue
                 try_open_browser_from_intent(text, tool_router)
                 print("JARVIS: ", end="", flush=True)
-                response = invoke_jarvis(graph, text, stream_callback=None, max_words=max_words)
-                print(_display_text(response), flush=True)
+                response, latency = invoke_jarvis(graph, text, stream_callback=None, max_words=max_words, config=config, memory=memory)
+                show_latency = config.get("show_latency", True)
+                lat_str = f" [{latency:.1f}s]" if show_latency else ""
+                print(_display_text(response) + lat_str, flush=True)
                 memory.save_interaction(text, response)
                 wav_path = tts.synthesize(response)
                 try:

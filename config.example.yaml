@@ -2,26 +2,34 @@
 # =========================================================
 # cp config.example.yaml config.yaml
 
-# Hybrid LLM (per-node binding in LangGraph)
+# Hybrid LLM (DictaLM: Planner/Reflector, Qwen: tools). See docs/OLLAMA_LATENCY.md
 llm:
   conversation_model: "aminadaven/dictalm2.0-instruct:q5_K_M"
   tool_model: "qwen3:4b"
   host: "http://localhost:11434"
   temperature: 0.7
-  max_tokens: 2048
-  context_window: 20
+  max_tokens: 256
+  context_window: 6
+  num_ctx_planner: 8192
+  num_ctx_reflector: 4096
+  num_ctx_tool: 4096
 
-# Voice
+# Voice (sub-800ms first audio with stream_tts + preload)
 voice:
-  preferred_language: "he"
+  preferred_language: "en"
   stt_model: "large-v3-turbo"
-  stt_device: "cuda"  # "cpu" if no GPU
-  stt_language: "he"  # null for auto-detect
+  stt_device: "cuda"
+  stt_language: "en"
+  stt_beam_size: 3
+  stt_compute_type: "int8"
   tts_engine: "piper"
   tts_voice: "jgkawell/jarvis"
   tts_quality: "medium"
   hebrew_voice: "he-IL-AvriNeural"
-  tts_speed: 1.15
+  force_hebrew_tts: false
+  preload_tts: true
+  stream_tts: true
+  tts_speed: 1.0  # Regular speed
   max_response_words: 50
   min_rms: 0.0010
   recorder_sample_rate: 16000
@@ -37,12 +45,13 @@ wake_word:
   device: null  # Set to mic ID from: python -c "import sounddevice; print(sounddevice.query_devices())"
   cooldown_seconds: 3
 
-# Memory
+# Memory (Chroma cache for <100ms queries)
 memory:
   db_path: "data/jarvis.db"
   chroma_path: "data/chroma"
   embedding_model: "nomic-embed-text"
-  max_memories: 5
+  max_memories: 3
+  chroma_cache_recent: true
 
 # Tools
 tools:
@@ -58,3 +67,4 @@ heartbeat:
 # General
 debug: false
 log_level: "INFO"
+timing: false  # true = print "Planner: 420ms | Tools: 180ms | TTS: 320ms"

@@ -8,20 +8,121 @@
 from __future__ import annotations
 
 import contextvars
+import time
 from typing import Any, Optional
 
 _stream_callback: contextvars.ContextVar[Optional[callable]] = contextvars.ContextVar("stream_callback", default=None)
+_timing_callback: contextvars.ContextVar[Optional[callable]] = contextvars.ContextVar("timing_callback", default=None)
+
+
+def _timing(name: str, elapsed_ms: float) -> None:
+    cb = _timing_callback.get()
+    if cb:
+        cb(name, elapsed_ms)
+
 
 # Lazy imports for optional deps
-def _get_llm(model: str, base_url: str = "http://localhost:11434"):
+def _get_llm(
+    model: str,
+    base_url: str = "http://localhost:11434",
+    temperature: float = 0.7,
+    num_predict: Optional[int] = None,
+    num_ctx: Optional[int] = None,
+):
     from langchain_ollama import ChatOllama
-    return ChatOllama(model=model, base_url=base_url, temperature=0.7)
+    kwargs = {"model": model, "base_url": base_url, "temperature": temperature}
+    model_kwargs = {}
+    if num_predict is not None:
+        model_kwargs["num_predict"] = num_predict
+    if num_ctx is not None:
+        model_kwargs["num_ctx"] = num_ctx
+    if model_kwargs:
+        kwargs["model_kwargs"] = model_kwargs
+    return ChatOllama(**kwargs)
 
 
 def listener_node(state: dict) -> dict:
     """Receives user input, updates state. Entry point."""
     # State already has messages from input
     return {"messages": state.get("messages", [])}
+
+
+def fastpath_node(
+    state: dict,
+    conversation_model: str,
+    base_url: str,
+    system_prompt: str,
+    memory: Optional[Any] = None,
+    llm_config: Optional[dict] = None,
+) -> dict:
+    """FastPath: Simple commands (no tools) -> direct Reflector. Skips Planner for sub-800ms first token."""
+    from langchain_core.messages import AIMessage, SystemMessage
+
+    llm_cfg = llm_config or {}
+    t0 = time.perf_counter()
+    llm = _get_llm(
+        conversation_model,
+        base_url,
+        temperature=llm_cfg.get("reflector_temperature", 0.5),
+        num_predict=llm_cfg.get("max_tokens", 128),
+        num_ctx=llm_cfg.get("num_ctx_reflector", 4096),
+    )
+    messages = state.get("messages", [])
+    if not messages:
+        return state
+
+    last_content = ""
+    for m in reversed(messages):
+        if hasattr(m, "content") and m.content:
+            last_content = m.content if isinstance(m.content, str) else str(m.content)
+            break
+    mem_ctx = _get_memory_context(memory, last_content or "general")
+    personality = "CRITICAL: Stay in character. Paul Bettany JARVIS. Dry British wit. Address as Sir or אדוני."
+    system = SystemMessage(content=personality + "\n\n" + system_prompt + mem_ctx)
+    trimmed = _trim_messages(messages, max_turns=llm_cfg.get("context_window", 6))
+    msgs = [system] + list(trimmed)
+    stream_cb = _stream_callback.get()
+
+    try:
+        if stream_cb:
+            chunks = []
+            for chunk in llm.stream(msgs):
+                if hasattr(chunk, "content") and chunk.content:
+                    chunks.append(chunk.content)
+                    stream_cb(chunk.content)
+            content = "".join(chunks)
+            response = AIMessage(content=content)
+        else:
+            response = llm.invoke(msgs)
+            content = response.content if hasattr(response, "content") else str(response)
+        elapsed = (time.perf_counter() - t0) * 1000
+        _timing("FastPath", elapsed)
+        return {
+            "messages": list(messages) + [response],
+            "final_response": content,
+        }
+    except Exception as e:
+        return {
+            "messages": messages,
+            "final_response": f"I apologise, Sir. An error occurred: {e}",
+        }
+
+
+def _get_memory_context(memory: Any, query: str, max_turns: int = 10) -> str:
+    """Build memory context (facts, recent conversations) for consistency."""
+    if not memory:
+        return ""
+    ctx = getattr(memory, "build_context", lambda q: "")(query)
+    if not ctx:
+        return ""
+    return f"\n\n## Context (use for consistency)\n{ctx}"
+
+
+def _trim_messages(messages: list, max_turns: int = 6) -> list:
+    """Keep last max_turns exchanges to avoid token overflow (shorter = faster)."""
+    if len(messages) <= max_turns * 2:
+        return messages
+    return list(messages[-(max_turns * 2):])
 
 
 def planner_node(
@@ -31,6 +132,8 @@ def planner_node(
     base_url: str,
     system_prompt: str,
     tool_router: Any,
+    memory: Optional[Any] = None,
+    llm_config: Optional[dict] = None,
 ) -> dict:
     """DictaLM: Decides intent, plans response, determines if tools needed.
 
@@ -40,7 +143,15 @@ def planner_node(
     from langchain_core.messages import HumanMessage, SystemMessage
     from langchain_core.messages import AIMessage
 
-    llm = _get_llm(conversation_model, base_url)
+    llm_cfg = llm_config or {}
+    t0 = time.perf_counter()
+    llm = _get_llm(
+        conversation_model,
+        base_url,
+        temperature=llm_cfg.get("planner_temperature", 0.5),
+        num_predict=llm_cfg.get("planner_max_tokens", 512),
+        num_ctx=llm_cfg.get("num_ctx_planner", 8192),
+    )
     messages = state.get("messages", [])
     if not messages:
         return state
@@ -51,8 +162,10 @@ def planner_node(
         return state
 
     user_text = last_msg.content if isinstance(last_msg.content, str) else str(last_msg.content)
-    system = SystemMessage(content=system_prompt + "\n\nDecide: tools needed or direct answer? If tools: output JSON with tool names and args.")
-    msgs = [system] + list(messages)
+    mem_ctx = _get_memory_context(memory, user_text)
+    system = SystemMessage(content=system_prompt + mem_ctx + "\n\nDecide: tools needed or direct answer? If tools: output JSON with tool names and args.")
+    trimmed = _trim_messages(messages, max_turns=llm_cfg.get("context_window", 10))
+    msgs = [system] + list(trimmed)
 
     # Bind tools for planning - Planner can request tool execution
     from langchain_core.tools import StructuredTool
@@ -77,6 +190,8 @@ def planner_node(
 
     try:
         response = llm_with_tools.invoke(msgs)
+        elapsed = (time.perf_counter() - t0) * 1000
+        _timing("Planner", elapsed)
         tool_calls = getattr(response, "tool_calls", []) or []
         return {
             "messages": list(messages) + [response],
@@ -99,6 +214,7 @@ def tool_executor_node(
 
     learn_new_skill uses Qwen3 via skills_manager._invoke_tool_llm for code generation.
     """
+    t0 = time.perf_counter()
     tool_calls = state.get("tool_calls", [])
     messages = state.get("messages", [])
 
@@ -127,6 +243,8 @@ def tool_executor_node(
         tid = tc.get("id", tc.get("tool_call_id", f"call_{i}"))
         tool_messages.append(ToolMessage(content=r["result"], tool_call_id=tid))
 
+    elapsed = (time.perf_counter() - t0) * 1000
+    _timing("Tools", elapsed)
     return {
         "messages": messages + tool_messages,
         "tool_results": results,
@@ -138,20 +256,38 @@ def reflector_node(
     conversation_model: str,
     base_url: str,
     system_prompt: str,
+    memory: Optional[Any] = None,
+    llm_config: Optional[dict] = None,
 ) -> dict:
     """DictaLM: Formats final response with Paul Bettany personality. Streams if stream_callback in config."""
     from langchain_core.messages import AIMessage, SystemMessage
 
-    llm = _get_llm(conversation_model, base_url)
+    llm_cfg = llm_config or {}
+    t0 = time.perf_counter()
+    llm = _get_llm(
+        conversation_model,
+        base_url,
+        temperature=llm_cfg.get("reflector_temperature", 0.5),
+        num_predict=llm_cfg.get("max_tokens", 256),
+        num_ctx=llm_cfg.get("num_ctx_reflector", 4096),
+    )
     messages = state.get("messages", [])
 
     if not messages:
         return state
 
+    # Get last user query for memory context
+    last_content = ""
+    for m in reversed(messages):
+        if hasattr(m, "content") and m.content:
+            last_content = m.content if isinstance(m.content, str) else str(m.content)
+            break
+    mem_ctx = _get_memory_context(memory, last_content or "general")
     # Personality reminder: Paul Bettany JARVIS - dry British wit, address as Sir
     personality_reminder = "CRITICAL: Stay in character. Paul Bettany JARVIS. Dry British wit. Address as Sir or אדוני."
-    system = SystemMessage(content=personality_reminder + "\n\n" + system_prompt)
-    msgs = [system] + list(messages)
+    system = SystemMessage(content=personality_reminder + "\n\n" + system_prompt + mem_ctx)
+    trimmed = _trim_messages(messages, max_turns=llm_cfg.get("context_window", 10))
+    msgs = [system] + list(trimmed)
     stream_cb = _stream_callback.get()
 
     try:
@@ -166,6 +302,8 @@ def reflector_node(
         else:
             response = llm.invoke(msgs)
             content = response.content if hasattr(response, "content") else str(response)
+        elapsed = (time.perf_counter() - t0) * 1000
+        _timing("Reflector", elapsed)
         return {
             "messages": list(messages) + [response],
             "final_response": content,

@@ -38,3 +38,27 @@ def test_graph_creation():
         assert graph is not None
     except Exception as e:
         pytest.skip(f"Graph creation failed (Ollama may not be running): {e}")
+
+
+def test_simple_query_detection():
+    from agent.graph import _is_simple_query
+    assert _is_simple_query("hi") is True
+    assert _is_simple_query("שלום") is True
+    assert _is_simple_query("thank you") is True
+    assert _is_simple_query("מה נשמע") is True
+    assert _is_simple_query("What is the capital of France?") is False
+    assert _is_simple_query("Search for Python tutorials online") is False
+
+
+def test_has_fastpath_node():
+    """Graph has FastPath node for simple commands (no tools)."""
+    from agent.graph import create_jarvis_graph
+    config = {"llm": {"conversation_model": "qwen3:4b", "tool_model": "qwen3:4b", "host": "http://localhost:11434"}}
+    try:
+        graph = create_jarvis_graph(config, checkpointer_path="data/test_checkpoints")
+        # LangGraph compiled graph exposes nodes
+        nodes = getattr(graph, "nodes", None) or {}
+        node_names = list(nodes.keys()) if isinstance(nodes, dict) else []
+        assert "fastpath" in node_names, f"Expected fastpath in {node_names}"
+    except Exception as e:
+        pytest.skip(f"Graph creation failed (Ollama may not be running): {e}")

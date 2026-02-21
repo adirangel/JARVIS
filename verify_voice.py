@@ -72,7 +72,7 @@ def main():
     try:
         from agent.graph import create_jarvis_graph, invoke_jarvis
         graph = create_jarvis_graph(config, checkpointer_path="data/verify_cp")
-        reply = invoke_jarvis(graph, "Say 'Verification complete' in one short sentence.")
+        reply, _ = invoke_jarvis(graph, "Say 'Verification complete' in one short sentence.")
         print(f"   Agent: {reply[:100]}...\n")
     except Exception as e:
         print(f"   FAILED: {e}\n")

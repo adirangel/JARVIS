@@ -151,7 +151,8 @@ def create_tts(
     )
     if preload:
         try:
-            tts.synthesize("Okay")
+            # Warm phrase - "As you wish, Sir..." for sub-800ms first audio
+            tts.synthesize("As you wish, Sir.")
         except Exception:
             pass
     return tts

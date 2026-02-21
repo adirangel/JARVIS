@@ -44,6 +44,8 @@ class MemoryManager:
                     chroma_path=chroma_path,
                     embedding_model=embedding_model,
                     ollama_host=ollama_host,
+                    cache_recent=True,
+                    max_cache_size=50,
                 )
             except Exception:
                 self._vector_store = None
