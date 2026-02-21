@@ -1,6 +1,6 @@
 """Speech-to-Text using faster-whisper (large-v3-turbo).
 
-GPU accelerated, excellent Hebrew + English detection.
+GPU accelerated, excellent English detection.
 """
 
 from __future__ import annotations

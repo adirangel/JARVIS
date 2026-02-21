@@ -26,9 +26,6 @@ DEFAULT_END_COMMANDS = (
     "end session",
     "that's all",
     "cancel",
-    "סיום",
-    "די",
-    "להתראות",
 )
 
 

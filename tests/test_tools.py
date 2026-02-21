@@ -33,20 +33,16 @@ def test_system_cmd():
     assert "hello" in result or "Output" in result
 
 
-def test_try_open_browser_hebrew():
-    """Hebrew commands should trigger open_browser like English."""
+def test_try_open_browser():
+    """Open/search commands should trigger open_browser."""
     from unittest.mock import patch
     from agent.tools import try_open_browser_from_intent, create_tool_router
     import yaml
     config = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8")) if (ROOT / "config.yaml").exists() else {}
     tool_router = create_tool_router(config)
     with patch("webbrowser.open"):
-        # Hebrew: open youtube
-        assert try_open_browser_from_intent("פתח יוטיוב בבקשה", tool_router) is True
-        # Hebrew: search
-        assert try_open_browser_from_intent("חפש מזג אוויר", tool_router) is True
-        # English: open youtube (sanity check)
         assert try_open_browser_from_intent("open youtube please", tool_router) is True
+        assert try_open_browser_from_intent("search for weather", tool_router) is True
 
 
 def test_get_current_time_beer_sheva():

@@ -18,13 +18,9 @@ llm:
 
 # Voice loop (continuous session + low latency)
 voice:
-  preferred_language: "he"
-  hebrew_first: true
-  auto_detect_language: true
-
   stt_model: "large-v3-turbo"
   stt_device: "cuda"
-  stt_language: "he"      # Hebrew-first; auto fallback enabled
+  stt_language: "en"
   stt_beam_size: 3
   stt_compute_type: "int8"
 
@@ -34,14 +30,6 @@ voice:
   preload_tts: true
   stream_tts: true
   max_response_words: 0   # 0 = no truncation
-
-  # Hebrew local Piper voice (optional, local-first). If missing, English Piper is used.
-  hebrew_voice: "he-IL-amit-medium"
-  hebrew_model_repo: "rhasspy/piper-voices"
-  # hebrew_model_path: "he/he_IL/amit/medium/he_IL-amit-medium.onnx"
-  # hebrew_model_config: "he/he_IL/amit/medium/he_IL-amit-medium.onnx.json"
-  allow_remote_hebrew_fallback: false
-  force_hebrew_tts: false
 
   min_rms: 0.0010
   min_audio_length: 1.0
@@ -59,7 +47,7 @@ voice:
 
   # Active session behavior
   silence_timeout: 15
-  session_end_commands: ["goodbye", "stop", "end session", "siyum", "סיום", "די", "להתראות"]
+  session_end_commands: ["goodbye", "stop", "end session"]
   listening_prompt: "Listening, Sir."
   wake_ack_prompt: ""
   session_end_prompt: "Very well, Sir. Standing by."

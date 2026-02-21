@@ -96,28 +96,22 @@ def main():
     print(f"   'thank you' accepted={v1} reason={r1}")
     print(f"   'background noise' accepted={v2} reason={r2}\n")
 
-    # 5) Long Hebrew TTS (no cut)
-    print("5) Testing long Hebrew TTS (chunked, no truncation)...")
+    # 5) Long TTS (chunked, no truncation)
+    print("5) Testing long TTS (chunked, no truncation)...")
     from voice.tts import create_tts
 
     tts = create_tts(
         engine=voice_cfg.get("tts_engine", "piper"),
         quality=voice_cfg.get("tts_quality", "medium"),
-        hebrew_voice=voice_cfg.get("hebrew_voice"),
         speed=voice_cfg.get("tts_speed", 1.0),
-        force_hebrew_tts=voice_cfg.get("force_hebrew_tts", False),
         preload=False,
-        hebrew_model_repo=voice_cfg.get("hebrew_model_repo"),
-        hebrew_model_path=voice_cfg.get("hebrew_model_path"),
-        hebrew_model_config=voice_cfg.get("hebrew_model_config"),
-        allow_remote_hebrew_fallback=voice_cfg.get("allow_remote_hebrew_fallback", False),
     )
-    long_he = (
-        "שלום Sir, מערכת הקול פעילה. "
-        "אני ממשיך להאזין ברצף גם לשאלות המשך, "
-        "ומסיים את ההפעלה רק לפי פקודת סיום או timeout."
+    long_text = (
+        "As you wish, Sir. The voice system is active. "
+        "I continue to listen for follow-up questions, "
+        "and end the session only on your command or timeout."
     )
-    wav_path = tts.synthesize(long_he, language_hint="he")
+    wav_path = tts.synthesize(long_text)
     try:
         import soundfile as sf
 
@@ -125,7 +119,7 @@ def main():
         duration = info.frames / float(info.samplerate) if info.samplerate else 0.0
     except Exception:
         duration = 0.0
-    print(f"   Synthesized long Hebrew to: {wav_path}")
+    print(f"   Synthesized to: {wav_path}")
     print(f"   Duration: {duration:.2f}s {'OK' if duration > 1.0 else 'CHECK'}\n")
 
     # 6) Agent response
@@ -143,7 +137,7 @@ def main():
     print("Recommended manual checks:")
     print("1) Noisy room false positives: python test_wake.py --noise-file samples/noise.wav")
     print("2) Three-turn conversation: python main.py --mode voice")
-    print("3) Long Hebrew response: ask for a detailed Hebrew summary in voice mode")
+    print("3) Long response: ask for a detailed summary in voice mode")
 
 
 if __name__ == "__main__":

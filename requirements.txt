@@ -17,9 +17,6 @@ soundfile
 numpy
 webrtcvad-wheels
 
-# Optional remote fallback for Hebrew TTS (disabled by default)
-edge-tts
-
 # System tray & scheduling
 pystray
 Pillow

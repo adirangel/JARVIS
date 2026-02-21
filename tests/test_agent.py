@@ -52,15 +52,12 @@ def test_time_query_no_false_positives():
 def test_simple_query_detection():
     from agent.graph import _is_simple_query
     assert _is_simple_query("hi") is True
-    assert _is_simple_query("שלום") is True
     assert _is_simple_query("thank you") is True
-    assert _is_simple_query("מה נשמע") is True
     assert _is_simple_query("What is the capital of France?") is False
     assert _is_simple_query("Search for Python tutorials online") is False
     # Time queries must go to planner (get_current_time tool), never fastpath
     assert _is_simple_query("What is the time right now in Be'er Sheva?") is False
     assert _is_simple_query("current time in Tokyo") is False
-    assert _is_simple_query("מה השעה בירושלים") is False
 
 
 def test_time_validator():

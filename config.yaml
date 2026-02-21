@@ -1,6 +1,6 @@
 # JARVIS Configuration
 # ====================
-# Goal profile: local-first, Hebrew-first, low-latency (<2s target), continuous conversation.
+# Goal profile: local-first, low-latency (<2s target), continuous conversation.
 
 llm:
   conversation_model: "aminadaven/dictalm2.0-instruct:q5_K_M"
@@ -17,13 +17,9 @@ llm:
   num_ctx_tool: 4096
 
 voice:
-  preferred_language: "he"
-  hebrew_first: true
-  auto_detect_language: true
-
   stt_model: "large-v3-turbo"
   stt_device: "cuda"
-  stt_language: "he"
+  stt_language: "en"
   stt_beam_size: 3
   stt_compute_type: "int8"
 
@@ -34,9 +30,6 @@ voice:
   preload_tts: true
   stream_tts: true
   max_response_words: 0
-
-  hebrew_voice: "he-IL-AvriNeural"  # edge-tts for correct Hebrew pronunciation
-  force_hebrew_tts: false
 
   min_rms: 0.0010
   min_audio_length: 1.0
@@ -53,7 +46,7 @@ voice:
   push_to_talk_seconds: 5
 
   silence_timeout: 15
-  session_end_commands: ["goodbye", "stop", "end session", "siyum", "סיום", "די", "להתראות"]
+  session_end_commands: ["goodbye", "stop", "end session"]
   listening_prompt: "Listening, Sir."
   wake_ack_prompt: ""
   session_end_prompt: "Very well, Sir. Standing by."

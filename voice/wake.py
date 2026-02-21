@@ -1,7 +1,6 @@
 """Wake word detection using openwakeword.
 
 "Hey Jarvis" (English) - hey_jarvis_v0.1
-Hebrew "היי ג'ארוויס" requires custom training - document in README.
 """
 
 from __future__ import annotations

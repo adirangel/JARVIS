@@ -47,22 +47,6 @@ KNOWN_SITES = {
     "spotify": "https://spotify.com",
     "grok": "https://grok.com",
 }
-# Hebrew names for same sites (for "פתח יוטיוב" etc.)
-KNOWN_SITES_HEBREW = {
-    "יוטיוב": "https://youtube.com",
-    "גוגל": "https://google.com",
-    "גימייל": "https://gmail.com",
-    "גיטהאב": "https://github.com",
-    "טוויטר": "https://twitter.com",
-    "פייסבוק": "https://facebook.com",
-    "רדיט": "https://reddit.com",
-    "ויקיפדיה": "https://wikipedia.org",
-    "נטפליקס": "https://netflix.com",
-    "ספוטיפיי": "https://spotify.com",
-    "גרוק": "https://grok.com",  # Grok
-}
-
-
 def open_browser_execute(url: str = "", search_query: str = "") -> str:
     """Open a URL or search in the default browser (Chrome if set as default)."""
     try:
@@ -88,15 +72,13 @@ def try_open_browser_from_intent(user_text: str, tool_router: Any) -> bool:
     import re
     text_raw = user_text.strip()
     text_lower = text_raw.lower()
-    # Trigger words: English + Hebrew (פתח=open, חפש/חיפוש=search, דפדפן=browser, עבור/לך=go to)
-    triggers_en = ("open", "search", "go to", "navigate", "browser")
-    triggers_he = ("פתח", "חפש", "חיפוש", "דפדפן", "עבור", "לך", "תפתח", "תחפש")
-    if not any(w in text_lower for w in triggers_en) and not any(w in text_raw for w in triggers_he):
+    triggers = ("open", "search", "go to", "navigate", "browser")
+    if not any(w in text_lower for w in triggers):
         return False
-    # Search: "search for X", "search X", "חפש X", "חיפוש X", "תחפש X"
+    # Search: "search for X", "search X"
     m = re.search(
-        r"(?:search\s+(?:for\s+)?|חפש\s+|חיפוש\s+|תחפש\s+)(.+?)(?:\.|$|please|בבקשה|תודה)",
-        text_raw, re.I | re.UNICODE
+        r"(?:search\s+(?:for\s+)?)(.+?)(?:\.|$|please)",
+        text_raw, re.I
     )
     if m:
         q = m.group(1).strip()
@@ -108,31 +90,18 @@ def try_open_browser_from_intent(user_text: str, tool_router: Any) -> bool:
         if site in text_lower:
             tool_router.execute("open_browser", url=url)
             return True
-    # Open site: Hebrew names (יוטיוב, גוגל, etc.)
-    for site_he, url in KNOWN_SITES_HEBREW.items():
-        if site_he in text_raw:
-            tool_router.execute("open_browser", url=url)
-            return True
-    # "open browser" / "פתח דפדפן" / "פתח לי דפדפן" -> open Google
-    if "דפדפן" in text_raw and ("פתח" in text_raw or "תפתח" in text_raw or "open" in text_lower):
+    # "open browser" -> open Google
+    if "browser" in text_lower and "open" in text_lower:
         tool_router.execute("open_browser", url="https://google.com")
         return True
-    if "browser" in text_lower and ("open" in text_lower or "פתח" in text_raw):
-        tool_router.execute("open_browser", url="https://google.com")
-        return True
-    # Open X: "פתח X", "תפתח X", "תפתח לי X" - extract X after trigger
+    # Open X: "open X", "go to X" - extract X after trigger
     m = re.search(
-        r"(?:open|פתח|תפתח|go\s+to|עבור\s+ל|לך\s+ל)\s*(?:לי\s+)?(.+?)(?:\.|$|בבקשה|please|תודה)",
-        text_raw, re.I | re.UNICODE
+        r"(?:open|go\s+to)\s*(.+?)(?:\.|$|please)",
+        text_raw, re.I
     )
     if m:
         target = m.group(1).strip()
         if target and len(target) > 1:
-            # Check if it's a known Hebrew site
-            for site_he, url in KNOWN_SITES_HEBREW.items():
-                if site_he in target:
-                    tool_router.execute("open_browser", url=url)
-                    return True
             # Check if it's a known English site
             for site, url in KNOWN_SITES.items():
                 if site in target.lower():
@@ -153,7 +122,7 @@ def try_open_browser_from_intent(user_text: str, tool_router: Any) -> bool:
 
 OPEN_BROWSER_TOOL = _to_ollama_tool(
     "open_browser",
-    "Open URL or search in browser. Use for: open youtube, פתח יוטיוב, search for X, חפש X, open browser, פתח דפדפן. ALWAYS use when user asks to open or search (Hebrew or English).",
+    "Open URL or search in browser. Use for: open youtube, search for X, open browser. ALWAYS use when user asks to open or search.",
     {
         "properties": {
             "url": {"type": "string", "description": "URL to open (e.g. https://youtube.com)"},
@@ -247,7 +216,7 @@ def extract_location_for_time_query(text: str) -> Optional[str]:
         return None
     t = text.strip()
     # "in X" - city after last "in" (handles "time in X", "what time is it in X", etc.)
-    m = re.search(r"\bin\s+([A-Za-z\u0590-\u05FF']+(?:\s+[A-Za-z\u0590-\u05FF']+)*)\s*[.?!]?\s*$", t, re.I)
+    m = re.search(r"\bin\s+([A-Za-z']+(?:\s+[A-Za-z']+)*)\s*[.?!]?\s*$", t, re.I)
     if m:
         loc = m.group(1).strip().rstrip("?")
         if " in " in loc:
@@ -258,14 +227,8 @@ def extract_location_for_time_query(text: str) -> Optional[str]:
             return None
         if loc.lower() not in ("it", "is", "there", "the"):
             return loc
-    # Hebrew: "מה השעה בX" or "שעה בX"
-    m = re.search(r"(?:מה\s+השעה|שעה)\s+ב\s*([^\s.?!]+(?:\s+[^\s.?!]+)*)", t)
-    if m:
-        loc = m.group(1).strip().rstrip("?")
-        if loc and not (set(loc.lower().split()) & _BAD_LOCATION_WORDS):
-            return loc
     # "time X" or "now X" (short)
-    m = re.search(r"(?:time|now)\s+([A-Za-z\u0590-\u05FF\s'-]+?)(?:\s*\?|$)", t)
+    m = re.search(r"(?:time|now)\s+([A-Za-z\s'-]+?)(?:\s*\?|$)", t)
     if m:
         loc = m.group(1).strip()
         if len(loc) > 2 and loc.lower() not in ("it", "is", "there") and not (set(loc.lower().split()) & _BAD_LOCATION_WORDS):

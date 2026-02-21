@@ -14,7 +14,6 @@ _NOISE_ARTIFACTS = frozenset({
     "thank you", "thanks", "thank", "you", "bye", "goodbye", "noise",
     "no", "yes", "ok", "okay", "um", "uh", "hmm", "ah", "oh",
     "the", "a", "an", "and", "or", "but", "so", "to", "of", "in",
-    "תודה", "בבקשה", "כן", "לא", "אוקיי",  # Hebrew common artifacts
 })
 
 # Minimum word count - single words often false positives

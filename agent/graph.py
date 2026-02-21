@@ -212,14 +212,12 @@ def _ensure_complete_sentence(text: str) -> str:
 # Simple query patterns - fast path skips planner/tool routing for single LLM call
 _SIMPLE_PATTERNS = (
     "hi", "hello", "hey", "thanks", "thank you", "bye", "goodbye", "ok", "okay",
-    "שלום", "היי", "תודה", "בבקשה", "מה נשמע", "מה קורה", "להתראות", "יאללה",
 )
 
 # Time query patterns - ALWAYS use get_current_time tool, NEVER let model guess
 _TIME_PATTERNS = (
     "what time", "current time", "time in ", "time now", "what's the time",
     "time right now", "the time", "now in ", "hora en", "quelle heure",
-    "מה השעה", "שעה ב", "השעה ב", "עכשיו ב", "מה השעה ב",
 )
 
 # Correction patterns - user says previous answer was wrong

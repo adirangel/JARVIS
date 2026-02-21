@@ -75,14 +75,8 @@ def create_tts(config: dict):
     return create_tts(
         engine=v.get("tts_engine", "piper"),
         quality=v.get("tts_quality", "medium"),
-        hebrew_voice=v.get("hebrew_voice", "he-IL-AvriNeural"),
         speed=v.get("tts_speed", 1.15),
-        force_hebrew_tts=v.get("force_hebrew_tts", False),
         preload=v.get("preload_tts", True),
-        hebrew_model_repo=v.get("hebrew_model_repo"),
-        hebrew_model_path=v.get("hebrew_model_path"),
-        hebrew_model_config=v.get("hebrew_model_config"),
-        allow_remote_hebrew_fallback=v.get("allow_remote_hebrew_fallback", False),
     )
 
 
@@ -117,7 +111,7 @@ def _play_ready_beep(volume: float = 0.08, seconds: float = 0.08, frequency_hz: 
         pass
 
 
-def _make_streaming_tts_callback(tts, play_audio_file, verbose: bool, language_hint: str | None = None):
+def _make_streaming_tts_callback(tts, play_audio_file, verbose: bool):
     """Stream callback: queue sentence-complete chunks for TTS playback."""
     import queue
     import re
@@ -135,7 +129,7 @@ def _make_streaming_tts_callback(tts, play_audio_file, verbose: bool, language_h
                     break
                 if item and str(item).strip():
                     try:
-                        wav_path = tts.synthesize(str(item).strip(), language_hint=language_hint)
+                        wav_path = tts.synthesize(str(item).strip())
                         play_audio_file(wav_path)
                     except Exception as e:
                         if verbose:
@@ -216,8 +210,6 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
     max_record_seconds = float(vc.get("max_record_seconds", 30))
     max_words = vc.get("max_response_words", 0) or 0
     silence_timeout = float(vc.get("silence_timeout", 15))
-    auto_detect_language = bool(vc.get("auto_detect_language", True))
-    hebrew_first = bool(vc.get("hebrew_first", True))
     thinking_prompt_each_turn = bool(vc.get("thinking_prompt_each_turn", False))
 
     end_commands_cfg = vc.get("session_end_commands", DEFAULT_END_COMMANDS)
@@ -239,13 +231,13 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
             sd.play(data, sr)
             sd.wait()
 
-    def _speak(text: str, language_hint: str | None = None, skip_if_active: bool = False) -> None:
+    def _speak(text: str, skip_if_active: bool = False) -> None:
         if not text or not text.strip():
             return
         if skip_if_active and session.is_active():
             return
         try:
-            wav_path = tts.synthesize(text.strip(), language_hint=language_hint)
+            wav_path = tts.synthesize(text.strip())
             _play_audio_file(wav_path)
         except Exception as e:
             if verbose:
@@ -339,7 +331,7 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
     _last_wake_time = [0.0]
     _processing = [False]
 
-    def _signal_ready(language_hint: str | None = None) -> None:
+    def _signal_ready() -> None:
         if vc.get("ready_beep", True):
             _play_ready_beep(
                 volume=float(vc.get("ready_beep_volume", 0.08)),
@@ -349,7 +341,7 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
         if not vc.get("ready_beep_only", False):
             listening_prompt = vc.get("listening_prompt", "Listening, Sir.")
             if listening_prompt:
-                _speak(listening_prompt, language_hint=language_hint)
+                _speak(listening_prompt)
 
     def _transcribe_audio(audio: bytes, preferred_language: str | None = None) -> dict | None:
         if not audio:
@@ -388,11 +380,8 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                 wav.setframerate(sample_rate)
                 wav.writeframes(audio)
         try:
-            attempts = [preferred_language]
-            if not preferred_language:
-                attempts = [vc.get("stt_language")]
-            if auto_detect_language and attempts[0]:
-                attempts.append(None)
+            lang = preferred_language or vc.get("stt_language") or "en"
+            attempts = [lang]
 
             last_reason = "empty"
             for lang in attempts:
@@ -414,12 +403,12 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
             except Exception:
                 pass
 
-    def _run_turn(user_text: str, language_hint: str | None = None, announce_thinking: bool = False) -> tuple[str, float]:
+    def _run_turn(user_text: str, announce_thinking: bool = False) -> tuple[str, float]:
         try_open_browser_from_intent(user_text, tool_router)
 
         thinking_prompt = vc.get("thinking_prompt", "As you wish, Sir...")
         if announce_thinking and thinking_prompt:
-            _speak(thinking_prompt, language_hint=language_hint)
+            _speak(thinking_prompt)
 
         stream_tts = bool(vc.get("stream_tts", True))
         if stream_tts:
@@ -427,7 +416,6 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                 tts,
                 _play_audio_file,
                 verbose,
-                language_hint=language_hint,
             )
             consumer_thread = start_consumer()
             try:
@@ -452,7 +440,7 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                 config=config,
                 memory=memory,
             )
-            _speak(response, language_hint=language_hint)
+            _speak(response)
 
         memory.save_interaction(user_text, response)
         if verbose:
@@ -463,10 +451,9 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
     def _run_active_session() -> None:
         session.activate()
         turn_index = 0
-        language_hint = "he" if hebrew_first else None
         wake_ack = vc.get("wake_ack_prompt", "")
         if wake_ack:
-            _speak(wake_ack, language_hint=language_hint)
+            _speak(wake_ack)
 
         try:
             if verbose:
@@ -487,7 +474,7 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                         break
                     continue
 
-                details = _transcribe_audio(audio, preferred_language=language_hint)
+                details = _transcribe_audio(audio)
                 if not details:
                     continue
 
@@ -495,30 +482,21 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                 if not text:
                     continue
 
-                detected_lang = (details.get("language") or "").lower()
-                if detected_lang.startswith("he"):
-                    language_hint = "he"
-                elif detected_lang.startswith("en"):
-                    language_hint = "en"
-
                 session.touch()
                 if verbose:
-                    print(f"[Voice] You said ({detected_lang or 'unknown'}): {_display_text(text)}", flush=True)
+                    detected_lang = (details.get("language") or "en").lower()
+                    print(f"[Voice] You said ({detected_lang}): {_display_text(text)}", flush=True)
 
                 if session.should_end_for_text(text):
                     end_prompt = vc.get("session_end_prompt", "Very well, Sir. Standing by.")
                     if end_prompt:
-                        _speak(end_prompt, language_hint=language_hint)
+                        _speak(end_prompt)
                     break
 
-                _run_turn(
-                    text,
-                    language_hint=language_hint,
-                    announce_thinking=(turn_index == 0 or thinking_prompt_each_turn),
-                )
+                _run_turn(text, announce_thinking=(turn_index == 0 or thinking_prompt_each_turn))
                 turn_index += 1
                 session.touch()
-                _signal_ready(language_hint=language_hint)
+                _signal_ready()
         finally:
             session.end()
             if verbose:
@@ -551,15 +529,14 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                 input(f"Press Enter to speak ({record_seconds}s recording)... ")
                 print("Listening...", flush=True)
                 audio = recorder.record_fixed(seconds=record_seconds)
-                details = _transcribe_audio(audio, preferred_language="he" if hebrew_first else None)
+                details = _transcribe_audio(audio)
                 if not details:
                     print("No valid speech detected. Try again.", flush=True)
                     continue
                 text = details.get("text", "")
-                lang_hint = (details.get("language") or "").lower()
                 print(f"You said: {_display_text(text)}", flush=True)
                 print("JARVIS: ", end="", flush=True)
-                _run_turn(text, language_hint=lang_hint, announce_thinking=True)
+                _run_turn(text, announce_thinking=True)
                 print()
             except (EOFError, KeyboardInterrupt):
                 break
@@ -568,9 +545,7 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
     elif wake and not console_mode:
         show_scores = wake_cfg.get("show_scores", False) or "--debug-wake" in sys.argv
         if verbose:
-            from voice.tts import _rtl_display
-            hebrew_wake = _rtl_display("היי ג'ארוויס")
-            print(f"Listening for wake word: \"Hey Jarvis\" / \"{hebrew_wake}\"...", flush=True)
+            print("Listening for wake word: \"Hey Jarvis\"...", flush=True)
         if show_scores:
             print("Debug: showing wake scores every ~4s.", flush=True)
         try:
@@ -584,7 +559,7 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                 if not text:
                     continue
                 print("JARVIS: ", end="", flush=True)
-                _run_turn(text, language_hint=None, announce_thinking=False)
+                _run_turn(text, announce_thinking=False)
             except (EOFError, KeyboardInterrupt):
                 break
 
@@ -648,9 +623,7 @@ def main():
             if push_to_talk:
                 print("JARVIS push-to-talk. Press Enter to record. Ctrl+C to quit.")
             else:
-                from voice.tts import _rtl_display
-                hebrew_wake = _rtl_display("היי ג'ארוויס")
-                print(f"JARVIS voice mode. Say 'Hey Jarvis' or '{hebrew_wake}'. Ctrl+C to quit.")
+                print("JARVIS voice mode. Say 'Hey Jarvis' then speak. Ctrl+C to quit.")
             stop_event = threading.Event()
             run_jarvis_loop(config, stop_event, console_mode=False, push_to_talk=push_to_talk)
             return
