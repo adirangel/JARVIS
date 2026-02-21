@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 # Ensure CUDA 12 DLLs are findable on Windows (cublas64_12.dll)
 if sys.platform == "win32":
@@ -50,6 +50,19 @@ class SpeechToText:
         self._compute_type = compute_type
         self._model = None
 
+    @staticmethod
+    def _normalize_language(language: Optional[str]) -> Optional[str]:
+        if language is None:
+            return None
+        lang = str(language).strip().lower()
+        if not lang or lang in ("auto", "detect", "automatic"):
+            return None
+        if lang in ("hebrew", "he-il"):
+            return "he"
+        if lang in ("english", "en-us", "en-gb"):
+            return "en"
+        return lang
+
     def _ensure_model(self) -> None:
         if self._model is None:
             device = self._device
@@ -73,20 +86,15 @@ class SpeechToText:
                 else:
                     raise
 
-    def transcribe(
+    def _transcribe_once(
         self,
         audio_path: str,
         language: Optional[str] = None,
         vad_filter: Optional[bool] = None,
-    ) -> str:
-        """Transcribe audio file to text.
-
-        vad_filter: Use Silero VAD to filter silence/background (reduces false positives).
-        Default True when not specified (config voice.use_vad).
-        """
+    ) -> tuple[list[Any], Any]:
         self._ensure_model()
-        lang = language or self._language
-        # Issue 1: VAD filters silence/background - reduces "thank you" etc. from noise
+        lang = self._normalize_language(language or self._language)
+        # VAD filters silence/background - reduces "thank you" etc. from noise
         use_vad = vad_filter if vad_filter is not None else True
         try:
             segments, info = self._model.transcribe(
@@ -109,8 +117,43 @@ class SpeechToText:
                 )
             else:
                 raise
-        text = " ".join(s.text for s in segments).strip()
-        return text or ""
+        return list(segments), info
+
+    def transcribe_detailed(
+        self,
+        audio_path: str,
+        language: Optional[str] = None,
+        vad_filter: Optional[bool] = None,
+    ) -> dict:
+        """Transcribe audio file and return text + detected language metadata."""
+        segments, info = self._transcribe_once(
+            audio_path,
+            language=language,
+            vad_filter=vad_filter,
+        )
+        text = " ".join((s.text or "").strip() for s in segments).strip()
+        detected_language = getattr(info, "language", None) or self._normalize_language(language) or "unknown"
+        language_probability = getattr(info, "language_probability", None)
+        duration = getattr(info, "duration", None)
+        return {
+            "text": text or "",
+            "language": detected_language,
+            "language_probability": language_probability,
+            "duration": duration,
+        }
+
+    def transcribe(
+        self,
+        audio_path: str,
+        language: Optional[str] = None,
+        vad_filter: Optional[bool] = None,
+    ) -> str:
+        """Transcribe audio file to text only."""
+        return self.transcribe_detailed(
+            audio_path,
+            language=language,
+            vad_filter=vad_filter,
+        )["text"]
 
     def transcribe_bytes(
         self,

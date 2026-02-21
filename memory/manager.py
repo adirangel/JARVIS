@@ -33,6 +33,8 @@ class MemoryManager:
         ollama_host: str = "http://localhost:11434",
         max_memories: int = 5,
         use_vector_store: bool = True,
+        chroma_cache_recent: bool = True,
+        chroma_cache_size: int = 50,
     ):
         self._sqlite = SQLiteStore(db_path)
         self._max_memories = max_memories
@@ -44,8 +46,8 @@ class MemoryManager:
                     chroma_path=chroma_path,
                     embedding_model=embedding_model,
                     ollama_host=ollama_host,
-                    cache_recent=True,
-                    max_cache_size=50,
+                    cache_recent=chroma_cache_recent,
+                    max_cache_size=chroma_cache_size,
                 )
             except Exception:
                 self._vector_store = None

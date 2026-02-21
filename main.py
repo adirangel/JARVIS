@@ -1,7 +1,7 @@
 """JARVIS - 100% Local AI Assistant.
 
-System tray app. Wake word -> STT -> Agent -> TTS.
-Hybrid LLM: DictaLM (conversation) + Qwen3 (tools).
+System tray app. Wake word -> active voice session -> STT -> agent -> TTS.
+Hybrid LLM: DictaLM (conversation/planner/reflector) + Qwen3 (tools/self-evolution).
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import threading
 import time
 from pathlib import Path
 
-# Windows: use UTF-8 so Hebrew/Unicode in agent responses don't trigger charmap errors
+# Windows: use UTF-8 so Hebrew/Unicode in agent responses don't trigger charmap errors.
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -27,6 +27,7 @@ if str(ROOT) not in sys.path:
 
 def load_config() -> dict:
     import yaml
+
     cfg = ROOT / "config.yaml"
     example = ROOT / "config.example.yaml"
     path = cfg if cfg.exists() else example
@@ -34,9 +35,10 @@ def load_config() -> dict:
     if path.exists():
         with open(path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f) or {}
-    # Patch ddgs to use fixed Chrome (not random) - avoids "Impersonate 'chrome_127' does not exist"
+    # Patch ddgs to use fixed Chrome (not random).
     try:
         from agent.ddgs_patch import apply_ddgs_patch
+
         apply_ddgs_patch(config)
     except Exception:
         pass
@@ -45,6 +47,7 @@ def load_config() -> dict:
 
 def create_memory(config: dict) -> "MemoryManager":
     from memory.manager import MemoryManager
+
     mem_cfg = config.get("memory", {})
     llm_host = config.get("llm", {}).get("host", "http://localhost:11434")
     return MemoryManager(
@@ -53,17 +56,21 @@ def create_memory(config: dict) -> "MemoryManager":
         embedding_model=mem_cfg.get("embedding_model", "nomic-embed-text"),
         ollama_host=llm_host,
         max_memories=mem_cfg.get("max_memories", 5),
+        chroma_cache_recent=mem_cfg.get("chroma_cache_recent", True),
+        chroma_cache_size=mem_cfg.get("chroma_cache_size", 50),
     )
 
 
 def _display_text(text: str) -> str:
     """Convert Hebrew/RTL text to visual order for correct console display."""
     from voice.tts import _rtl_display
+
     return _rtl_display(text)
 
 
 def create_tts(config: dict):
     from voice.tts import create_tts
+
     v = config.get("voice", {})
     return create_tts(
         engine=v.get("tts_engine", "piper"),
@@ -71,32 +78,56 @@ def create_tts(config: dict):
         hebrew_voice=v.get("hebrew_voice", "he-IL-AvriNeural"),
         speed=v.get("tts_speed", 1.15),
         force_hebrew_tts=v.get("force_hebrew_tts", False),
-        preload=v.get("preload_tts", True),  # Preload Piper - "As you wish, Sir..." within 800ms
+        preload=v.get("preload_tts", True),
+        hebrew_model_repo=v.get("hebrew_model_repo"),
+        hebrew_model_path=v.get("hebrew_model_path"),
+        hebrew_model_config=v.get("hebrew_model_config"),
+        allow_remote_hebrew_fallback=v.get("allow_remote_hebrew_fallback", False),
     )
 
 
 def create_stt(config: dict):
     from voice.stt import SpeechToText
+
     v = config.get("voice", {})
+    lang = v.get("stt_language")
+    if isinstance(lang, str) and lang.strip().lower() in ("", "auto", "detect", "automatic"):
+        lang = None
     return SpeechToText(
         model_name=v.get("stt_model", "large-v3-turbo"),
         device=v.get("stt_device", "cuda"),
-        language=v.get("stt_language"),
+        language=lang,
         beam_size=v.get("stt_beam_size", 3),
         compute_type=v.get("stt_compute_type", "int8"),
     )
 
 
-def _make_streaming_tts_callback(tts, verbose: bool):
-    """Stream callback: buffer chunks, queue for immediate TTS on phrase boundaries (sub-800ms first audio)."""
+def _play_ready_beep(volume: float = 0.08, seconds: float = 0.08, frequency_hz: float = 920.0) -> None:
+    """Soft readiness beep for active-session mode."""
+    try:
+        import numpy as np
+        import sounddevice as sd
+
+        sample_rate = 22050
+        t = np.linspace(0, seconds, int(sample_rate * seconds), endpoint=False)
+        tone = (np.sin(2 * np.pi * frequency_hz * t) * volume).astype(np.float32)
+        sd.play(tone, sample_rate)
+        sd.wait()
+    except Exception:
+        pass
+
+
+def _make_streaming_tts_callback(tts, play_audio_file, verbose: bool, language_hint: str | None = None):
+    """Stream callback: queue sentence-complete chunks for TTS playback."""
     import queue
+    import re
+
     buffer = []
     text_queue = queue.Queue()
     _stop_sentinel = object()
+    sentence_boundary = re.compile(r"[.!?\u2026;:\u05C3]\s*$")
 
     def _consumer() -> None:
-        import sounddevice as sd
-        import soundfile as sf
         while True:
             try:
                 item = text_queue.get(timeout=0.5)
@@ -104,10 +135,8 @@ def _make_streaming_tts_callback(tts, verbose: bool):
                     break
                 if item and str(item).strip():
                     try:
-                        wav_path = tts.synthesize(str(item).strip())
-                        data, sr = sf.read(wav_path)
-                        sd.play(data, sr)
-                        sd.wait()
+                        wav_path = tts.synthesize(str(item).strip(), language_hint=language_hint)
+                        play_audio_file(wav_path)
                     except Exception as e:
                         if verbose:
                             print(f"[Stream TTS] {e}", flush=True)
@@ -117,11 +146,8 @@ def _make_streaming_tts_callback(tts, verbose: bool):
     def on_chunk(chunk: str) -> None:
         buffer.append(chunk)
         s = "".join(buffer)
-        # Issue 3: Buffer until full sentence to avoid TTS cutoff. Play on sentence end (preferred)
-        # or after ~80 chars for long run-ons (avoids cutting "10:58 AM (IST, UTC+2)" mid-time)
-        sentence_end = any(s.rstrip().endswith(p) for p in (".", "!", "?", "。", "…", ";"))
-        min_chars = 80  # Long enough for time strings; short enough to avoid latency
-        if sentence_end or len(s) >= min_chars:
+        # Buffer until sentence punctuation to avoid truncation in playback.
+        if sentence_boundary.search(s.rstrip()):
             phrase = "".join(buffer).strip()
             if phrase:
                 text_queue.put(phrase)
@@ -134,8 +160,8 @@ def _make_streaming_tts_callback(tts, verbose: bool):
 
     def put_remainder(text: str) -> None:
         if text and text.strip():
-            # Issue 3: Ensure remainder ends properly (avoids abrupt TTS cutoff)
             from agent.graph import _ensure_complete_sentence
+
             text = _ensure_complete_sentence(text.strip())
             text_queue.put(text)
 
@@ -151,10 +177,17 @@ def _make_streaming_tts_callback(tts, verbose: bool):
 
 
 def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: bool = False, push_to_talk: bool = False):
-    """Main loop: wake word -> record -> STT -> agent -> TTS. If console_mode, use text input. If push_to_talk, press Enter to record."""
+    """Main loop: wake word -> active session -> STT -> agent -> TTS."""
+    import tempfile
+    import wave
+
+    import numpy as np
+
     from agent.graph import create_jarvis_graph, invoke_jarvis
     from agent.tools import create_tool_router, try_open_browser_from_intent
     from voice.recorder import Recorder
+    from voice.session import DEFAULT_END_COMMANDS, VoiceSession
+    from voice.validation import has_voice_activity, is_valid_transcript
 
     verbose = console_mode or "--mode" in sys.argv
     if verbose:
@@ -172,32 +205,77 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
     stt = create_stt(config)
     stt._ensure_model()
 
-    # Heartbeat: witty voiced summary every 30 min (even when idle)
-    def _tts_speak(text: str) -> None:
-        try:
-            wav_path = tts.synthesize(text)
-            import sounddevice as sd
-            import soundfile as sf
+    wake_cfg = config.get("wake_word", {})
+    vc = config.get("voice", {})
+    sample_rate = int(vc.get("recorder_sample_rate", 16000))
+    min_rms = float(vc.get("min_rms", 0.001))
+    min_audio_len = float(vc.get("min_audio_length", 1.0))
+    min_words = int(vc.get("min_transcript_words", 3))
+    use_vad = bool(vc.get("use_vad", True))
+    speech_start_timeout = float(vc.get("speech_start_timeout", 3.5))
+    max_record_seconds = float(vc.get("max_record_seconds", 30))
+    max_words = vc.get("max_response_words", 0) or 0
+    silence_timeout = float(vc.get("silence_timeout", 15))
+    auto_detect_language = bool(vc.get("auto_detect_language", True))
+    hebrew_first = bool(vc.get("hebrew_first", True))
+    thinking_prompt_each_turn = bool(vc.get("thinking_prompt_each_turn", False))
+
+    end_commands_cfg = vc.get("session_end_commands", DEFAULT_END_COMMANDS)
+    if isinstance(end_commands_cfg, str):
+        end_commands_cfg = [p.strip() for p in end_commands_cfg.split(",") if p.strip()]
+    session = VoiceSession(
+        silence_timeout=silence_timeout,
+        end_commands=tuple(end_commands_cfg) if end_commands_cfg else tuple(DEFAULT_END_COMMANDS),
+    )
+
+    audio_lock = threading.Lock()
+
+    def _play_audio_file(wav_path: str) -> None:
+        import sounddevice as sd
+        import soundfile as sf
+
+        with audio_lock:
             data, sr = sf.read(wav_path)
             sd.play(data, sr)
             sd.wait()
-        except Exception:
-            pass
+
+    def _speak(text: str, language_hint: str | None = None, skip_if_active: bool = False) -> None:
+        if not text or not text.strip():
+            return
+        if skip_if_active and session.is_active():
+            return
+        try:
+            wav_path = tts.synthesize(text.strip(), language_hint=language_hint)
+            _play_audio_file(wav_path)
+        except Exception as e:
+            if verbose:
+                print(f"[TTS] {e}", flush=True)
+
+    # Heartbeat: never interrupt active sessions.
+    def _tts_speak(text: str) -> None:
+        if session.is_active():
+            if verbose:
+                print("[Heartbeat] Deferred during active session.", flush=True)
+            return
+        _speak(text, skip_if_active=True)
 
     def _llm_invoke(prompt: str) -> str:
         try:
             from langchain_ollama import ChatOllama
-            from langchain_core.messages import SystemMessage, HumanMessage
+            from langchain_core.messages import HumanMessage, SystemMessage
+
             llm_cfg = config.get("llm", {})
             conv_model = llm_cfg.get("conversation_model", "aminadaven/dictalm2.0-instruct:q5_K_M")
             base_url = llm_cfg.get("host", "http://localhost:11434")
             if base_url and not base_url.startswith("http"):
                 base_url = f"http://{base_url}"
             llm = ChatOllama(model=conv_model, base_url=base_url, temperature=0.7)
-            resp = llm.invoke([
-                SystemMessage(content="You are JARVIS. Brief, dry wit. Address user as Sir."),
-                HumanMessage(content=prompt),
-            ])
+            resp = llm.invoke(
+                [
+                    SystemMessage(content="You are JARVIS. Brief, dry wit. Address user as Sir."),
+                    HumanMessage(content=prompt),
+                ]
+            )
             return resp.content if hasattr(resp, "content") else str(resp)
         except Exception:
             return ""
@@ -206,7 +284,14 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
     interval = hb_cfg.get("interval_minutes", 30)
     try:
         from heartbeat import start_heartbeat
-        start_heartbeat(memory, _tts_speak, _llm_invoke, interval_minutes=interval)
+
+        start_heartbeat(
+            memory,
+            _tts_speak,
+            _llm_invoke,
+            interval_minutes=interval,
+            allow_run=lambda: not session.is_active(),
+        )
         if verbose:
             print(f"Heartbeat started (every {interval} min).", flush=True)
     except Exception as e:
@@ -216,326 +301,290 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
     if console_mode:
         print("Ready. Type your message below.", flush=True)
     elif verbose:
-        print("Ready. Listening for 'Hey Jarvis'...", flush=True)
+        print("Ready. Listening for wake word...", flush=True)
 
-    wake_cfg = config.get("wake_word", {})
-    models = wake_cfg.get("models", ["hey_jarvis_v0.1"])
-    # Issue 1: Use wake_confidence (0.7-0.85) to reduce false positives; fallback to threshold
-    threshold = wake_cfg.get("wake_confidence") or wake_cfg.get("threshold", 0.35)
+    threshold = wake_cfg.get("wake_confidence")
+    if threshold is None:
+        threshold = wake_cfg.get("threshold", 0.75)
     mic_device = wake_cfg.get("device")
     noise_gate_rms = wake_cfg.get("noise_gate_rms", 0.005)
 
-    vc = config.get("voice", {})
     recorder = Recorder(
-        sample_rate=vc.get("recorder_sample_rate", 16000),
+        sample_rate=sample_rate,
         silence_threshold=vc.get("recorder_silence_threshold", 0.012),
         silence_duration=vc.get("recorder_silence_duration", 2.5),
         device=mic_device,
+        speech_start_threshold=vc.get("speech_start_threshold"),
     )
 
     try:
         from voice.wake import WakeWordDetector
+
         wake = WakeWordDetector(
-            model_names=models,
+            model_names=wake_cfg.get("models", ["hey_jarvis_v0.1"]),
             threshold=threshold,
             device=mic_device,
             wake_confidence=wake_cfg.get("wake_confidence"),
             noise_gate_rms=noise_gate_rms,
         )
+        try:
+            wake._ensure_model()
+        except Exception:
+            pass
     except ImportError:
         wake = None
 
-    record_seconds = config.get("voice", {}).get("push_to_talk_seconds", 5)
-    wake_cooldown_sec = config.get("wake_word", {}).get("cooldown_seconds", 3)
-    _last_wake_time = [0.0]  # mutable for closure
-    _processing = [False]  # Only one recording/response at a time (prevents TTS bleed)
+    record_seconds = int(vc.get("push_to_talk_seconds", 5))
+    wake_cooldown_sec = float(wake_cfg.get("cooldown_seconds", 3))
+    _last_wake_time = [0.0]
+    _processing = [False]
 
-    def on_wake():
-        import time as _time
-        if _processing[0]:
-            return  # Already processing - prevents overlapping recordings that capture TTS
-        now = _time.monotonic()
+    def _signal_ready(language_hint: str | None = None) -> None:
+        if vc.get("ready_beep", True):
+            _play_ready_beep(
+                volume=float(vc.get("ready_beep_volume", 0.08)),
+                seconds=float(vc.get("ready_beep_seconds", 0.08)),
+                frequency_hz=float(vc.get("ready_beep_frequency_hz", 920)),
+            )
+        if not vc.get("ready_beep_only", False):
+            listening_prompt = vc.get("listening_prompt", "Listening, Sir.")
+            if listening_prompt:
+                _speak(listening_prompt, language_hint=language_hint)
+
+    def _transcribe_audio(audio: bytes, preferred_language: str | None = None) -> dict | None:
+        if not audio:
+            return None
+
+        duration = len(audio) / float(sample_rate * 2)
+        if duration < min_audio_len:
+            if verbose:
+                print(f"[Voice] Ignored short audio ({duration:.2f}s < {min_audio_len}s).", flush=True)
+            return None
+
+        arr = np.frombuffer(audio, dtype=np.int16)
+        rms = np.sqrt(np.mean(arr.astype(np.float64) ** 2)) / 32768
+        if rms <= min_rms:
+            if verbose:
+                print(f"[Voice] Ignored low RMS ({rms:.4f} <= {min_rms:.4f}).", flush=True)
+            return None
+
+        if use_vad:
+            vad_ok, vad_reason = has_voice_activity(
+                audio,
+                sample_rate=sample_rate,
+                min_speech_ratio=float(vc.get("vad_min_speech_ratio", 0.08)),
+                vad_aggressiveness=int(vc.get("vad_aggressiveness", 2)),
+            )
+            if not vad_ok:
+                if verbose:
+                    print(f"[Voice] Rejected by pre-STT VAD ({vad_reason}).", flush=True)
+                return None
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            tmp_path = f.name
+            with wave.open(tmp_path, "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(sample_rate)
+                wav.writeframes(audio)
+        try:
+            attempts = [preferred_language]
+            if not preferred_language:
+                attempts = [vc.get("stt_language")]
+            if auto_detect_language and attempts[0]:
+                attempts.append(None)
+
+            last_reason = "empty"
+            for lang in attempts:
+                details = stt.transcribe_detailed(tmp_path, language=lang, vad_filter=use_vad)
+                text = (details.get("text") or "").strip()
+                valid, reason = is_valid_transcript(text, min_words=min_words, log_rejections=verbose)
+                if text and valid:
+                    details["text"] = text
+                    details["audio_duration"] = duration
+                    details["rms"] = rms
+                    return details
+                last_reason = reason or "invalid"
+            if verbose:
+                print(f"[Voice] Transcript rejected ({last_reason}).", flush=True)
+            return None
+        finally:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    def _run_turn(user_text: str, language_hint: str | None = None, announce_thinking: bool = False) -> tuple[str, float]:
+        try_open_browser_from_intent(user_text, tool_router)
+
+        thinking_prompt = vc.get("thinking_prompt", "As you wish, Sir...")
+        if announce_thinking and thinking_prompt:
+            _speak(thinking_prompt, language_hint=language_hint)
+
+        stream_tts = bool(vc.get("stream_tts", True))
+        if stream_tts:
+            on_chunk, flush, put_remainder, start_consumer, stop_consumer = _make_streaming_tts_callback(
+                tts,
+                _play_audio_file,
+                verbose,
+                language_hint=language_hint,
+            )
+            consumer_thread = start_consumer()
+            try:
+                response, latency = invoke_jarvis(
+                    graph,
+                    user_text,
+                    stream_callback=on_chunk,
+                    max_words=max_words,
+                    config=config,
+                    memory=memory,
+                )
+                put_remainder(flush())
+            finally:
+                stop_consumer()
+                consumer_thread.join(timeout=30)
+        else:
+            response, latency = invoke_jarvis(
+                graph,
+                user_text,
+                stream_callback=None,
+                max_words=max_words,
+                config=config,
+                memory=memory,
+            )
+            _speak(response, language_hint=language_hint)
+
+        memory.save_interaction(user_text, response)
+        if verbose:
+            lat_str = f" [{latency:.1f}s]" if config.get("show_latency", True) else ""
+            print(_display_text(response) + lat_str, flush=True)
+        return response, latency
+
+    def _run_active_session() -> None:
+        session.activate()
+        turn_index = 0
+        language_hint = "he" if hebrew_first else None
+        wake_ack = vc.get("wake_ack_prompt", "")
+        if wake_ack:
+            _speak(wake_ack, language_hint=language_hint)
+
+        try:
+            if verbose:
+                print("[Session] Active session started.", flush=True)
+            while not stop_event.is_set() and session.is_active():
+                remaining = session.time_remaining()
+                if remaining <= 0:
+                    if verbose:
+                        print("[Session] Silence timeout reached; returning to wake mode.", flush=True)
+                    break
+
+                if verbose:
+                    print(f"[Session] Listening... ({remaining:.1f}s remaining)", flush=True)
+                start_timeout = min(max(0.6, speech_start_timeout), remaining)
+                audio = recorder.record_utterance(start_timeout=start_timeout, max_seconds=max_record_seconds)
+                if not audio:
+                    if session.timed_out():
+                        break
+                    continue
+
+                details = _transcribe_audio(audio, preferred_language=language_hint)
+                if not details:
+                    continue
+
+                text = (details.get("text") or "").strip()
+                if not text:
+                    continue
+
+                detected_lang = (details.get("language") or "").lower()
+                if detected_lang.startswith("he"):
+                    language_hint = "he"
+                elif detected_lang.startswith("en"):
+                    language_hint = "en"
+
+                session.touch()
+                if verbose:
+                    print(f"[Voice] You said ({detected_lang or 'unknown'}): {_display_text(text)}", flush=True)
+
+                if session.should_end_for_text(text):
+                    end_prompt = vc.get("session_end_prompt", "Very well, Sir. Standing by.")
+                    if end_prompt:
+                        _speak(end_prompt, language_hint=language_hint)
+                    break
+
+                _run_turn(
+                    text,
+                    language_hint=language_hint,
+                    announce_thinking=(turn_index == 0 or thinking_prompt_each_turn),
+                )
+                turn_index += 1
+                session.touch()
+                _signal_ready(language_hint=language_hint)
+        finally:
+            session.end()
+            if verbose:
+                print("[Session] Wake-only mode.", flush=True)
+
+    def on_wake() -> None:
+        if session.is_active() or _processing[0]:
+            return
+        now = time.monotonic()
         if now - _last_wake_time[0] < wake_cooldown_sec:
-            return  # Ignore rapid re-triggers
+            return
         _last_wake_time[0] = now
         _processing[0] = True
 
-        def _process():
+        def _process() -> None:
             try:
                 if verbose:
-                    print("[Wake word detected] Recording... (speak, I'll wait until you finish)", flush=True)
-                audio = recorder.record_until_silence(max_seconds=30)
-                if not audio:
-                    if verbose:
-                        print("[Wake] No audio captured.", flush=True)
-                    return
-                import numpy as np
-                arr = np.frombuffer(audio, dtype=np.int16)
-                rms = np.sqrt(np.mean(arr.astype(np.float64) ** 2)) / 32768
-                min_rms = config.get("voice", {}).get("min_rms", 0.0020)
-                if rms <= min_rms:
-                    if verbose:
-                        print(f"[Wake] Too quiet (RMS={rms:.4f}), waiting for speech...", flush=True)
-                    return
-                # Issue 1: Min audio length - ignore very short recordings (noise bursts)
-                sample_rate = vc.get("recorder_sample_rate", 16000)
-                audio_duration = len(audio) / (sample_rate * 2)
-                min_audio_len = vc.get("min_audio_length", 1.0)
-                if audio_duration < min_audio_len:
-                    if verbose:
-                        print(f"[Wake] Audio too short ({audio_duration:.1f}s < {min_audio_len}s), likely noise.", flush=True)
-                    return
-                import tempfile
-                import wave
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                    with wave.open(f.name, "wb") as wav:
-                        wav.setnchannels(1)
-                        wav.setsampwidth(2)
-                        wav.setframerate(16000)
-                        wav.writeframes(audio)
-                    use_vad = vc.get("use_vad", True)
-                    text = stt.transcribe(f.name, vad_filter=use_vad)
-                # Issue 1: Post-STT validation - discard noise artifacts ("thank you", etc.)
-                from voice.validation import is_valid_transcript
-                min_words = vc.get("min_transcript_words", 3)
-                valid, reason = is_valid_transcript(text, min_words=min_words, log_rejections=verbose)
-                if not valid:
-                    if verbose:
-                        print(f"[Wake] Rejected transcript (false positive: {reason}): {text[:60]!r}", flush=True)
-                    return
-                if not text.strip():
-                    if verbose:
-                        print("[Wake] No speech transcribed.", flush=True)
-                    return
-                if verbose:
-                    print(f"[Wake] You said: {_display_text(text)}", flush=True)
-                try_open_browser_from_intent(text, tool_router)
-                max_words = config.get("voice", {}).get("max_response_words", 50)
-                stream_tts = config.get("voice", {}).get("stream_tts", True)
-                if stream_tts:
-                    on_chunk, flush, put_remainder, start_consumer, stop_consumer = _make_streaming_tts_callback(tts, verbose)
-                    consumer_thread = start_consumer()
-                    try:
-                        response, latency = invoke_jarvis(
-                            graph, text,
-                            stream_callback=on_chunk,
-                            max_words=max_words, config=config, memory=memory,
-                        )
-                        put_remainder(flush())
-                    finally:
-                        stop_consumer()
-                        consumer_thread.join(timeout=30)
-                    # TTS already played via streaming - no duplicate
-                else:
-                    response, latency = invoke_jarvis(graph, text, stream_callback=None, max_words=max_words, config=config, memory=memory)
-                    wav_path = tts.synthesize(response)
-                    try:
-                        import sounddevice as sd
-                        import soundfile as sf
-                        data, sr = sf.read(wav_path)
-                        sd.play(data, sr)
-                        sd.wait()
-                    except Exception as e:
-                        if verbose:
-                            print(f"[Wake] TTS play error: {e}", flush=True)
-                show_latency = config.get("show_latency", True)
-                if verbose:
-                    lat_str = f" [{latency:.1f}s]" if show_latency else ""
-                    print(_display_text(response) + lat_str, flush=True)
-                memory.save_interaction(text, response)
-                import time as _t
-                if verbose:
-                    _t.sleep(0.5)  # Let audio device settle before next listen
-                    print("[Wake] Listening again...", flush=True)
-                # Issue 2: Play "Listening, Sir." to indicate ready for follow-up (no wake word needed)
-                listening_prompt = vc.get("listening_prompt", "Listening, Sir.")
-                if listening_prompt:
-                    try:
-                        wav_listen = tts.synthesize(listening_prompt)
-                        import sounddevice as sd
-                        import soundfile as sf
-                        data_listen, sr_listen = sf.read(wav_listen)
-                        sd.play(data_listen, sr_listen)
-                        sd.wait()
-                    except Exception:
-                        pass
-                # Issue 2: Continuous conversation - listen until silence_timeout or explicit end
-                silence_timeout = vc.get("silence_timeout") or vc.get("follow_up_seconds", 15)
-                _END_COMMANDS = ("goodbye", "good bye", "end", "stop", "that's all", "להתראות", "סיום")
-                t_followup_start = _t.monotonic()
-                while silence_timeout > 0 and not stop_event.is_set():
-                    if verbose:
-                        elapsed = _t.monotonic() - t_followup_start
-                        print(f"[Wake] Follow-up - speak or stay silent to end... [{elapsed:.1f}s]", flush=True)
-                    t_record_start = _t.monotonic()
-                    audio2 = recorder.record_until_silence(max_seconds=silence_timeout)
-                    if not audio2:
-                        break
-                    arr2 = np.frombuffer(audio2, dtype=np.int16)
-                    rms2 = np.sqrt(np.mean(arr2.astype(np.float64) ** 2)) / 32768
-                    if rms2 <= min_rms:
-                        if verbose:
-                            elapsed = _t.monotonic() - t_record_start
-                            print(f"[Wake] Silence - ending conversation. [{elapsed:.1f}s]", flush=True)
-                        break
-                    # Issue 1: Min audio length for follow-up too
-                    audio2_duration = len(audio2) / (sample_rate * 2)
-                    if audio2_duration < min_audio_len:
-                        if verbose:
-                            print(f"[Wake] Follow-up too short ({audio2_duration:.1f}s), skipping.", flush=True)
-                        continue
-                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f2:
-                        with wave.open(f2.name, "wb") as wav2:
-                            wav2.setnchannels(1)
-                            wav2.setsampwidth(2)
-                            wav2.setframerate(16000)
-                            wav2.writeframes(audio2)
-                        text2 = stt.transcribe(f2.name, vad_filter=use_vad)
-                    if not text2.strip():
-                        if verbose:
-                            elapsed = _t.monotonic() - t_record_start
-                            print(f"[Wake] No speech - ending conversation. [{elapsed:.1f}s]", flush=True)
-                        break
-                    # Issue 2: Validate follow-up transcript (avoid false positives)
-                    valid2, _ = is_valid_transcript(text2, min_words=min_words, log_rejections=verbose)
-                    if not valid2:
-                        if verbose:
-                            print(f"[Wake] Rejected follow-up (false positive), continuing to listen...", flush=True)
-                        continue
-                    # Issue 2: Explicit end commands - exit conversation mode
-                    t2_lower = text2.strip().lower()
-                    if any(cmd in t2_lower for cmd in _END_COMMANDS):
-                        if verbose:
-                            print("[Wake] User said goodbye - ending conversation.", flush=True)
-                        break
-                    if verbose:
-                        print(f"[Wake] You said: {_display_text(text2)}", flush=True)
-                    try_open_browser_from_intent(text2, tool_router)
-                    response2, latency2 = invoke_jarvis(graph, text2, stream_callback=None, max_words=max_words, config=config, memory=memory)
-                    show_latency = config.get("show_latency", True)
-                    if verbose:
-                        lat_str = f" [{latency2:.1f}s]" if show_latency else ""
-                        print(_display_text(response2) + lat_str, flush=True)
-                    memory.save_interaction(text2, response2)
-                    wav_path2 = tts.synthesize(response2)
-                    try:
-                        import sounddevice as sd
-                        import soundfile as sf
-                        data2, sr2 = sf.read(wav_path2)
-                        sd.play(data2, sr2)
-                        sd.wait()
-                    except Exception:
-                        pass
-                    if verbose:
-                        _t.sleep(0.5)
-                        print("[Wake] Listening again...", flush=True)
-                    # Issue 2: Play listening prompt after each response in continuous mode
-                    if listening_prompt:
-                        try:
-                            wav2 = tts.synthesize(listening_prompt)
-                            import sounddevice as sd
-                            import soundfile as sf
-                            d2, sr2 = sf.read(wav2)
-                            sd.play(d2, sr2)
-                            sd.wait()
-                        except Exception:
-                            pass
+                    print("[Wake] Detected. Entering active session...", flush=True)
+                _run_active_session()
             except Exception as e:
                 print(f"[Wake] Error: {e}", flush=True)
             finally:
                 _processing[0] = False
+
         threading.Thread(target=_process, daemon=True).start()
 
     if push_to_talk and not console_mode:
-        # Push-to-talk: press Enter, speak for N seconds (fixed duration = more reliable)
         while not stop_event.is_set():
             try:
                 input(f"Press Enter to speak ({record_seconds}s recording)... ")
                 print("Listening...", flush=True)
-                try:
-                    audio = recorder.record_fixed(seconds=record_seconds)
-                    if not audio:
-                        print("No audio captured.", flush=True)
-                        continue
-                    import numpy as np
-                    arr = np.frombuffer(audio, dtype=np.int16)
-                    rms = np.sqrt(np.mean(arr.astype(np.float64) ** 2)) / 32768
-                    min_rms = config.get("voice", {}).get("min_rms", 0.0020)
-                    print(f"Recorded: RMS={rms:.4f} ({'OK' if rms > min_rms else 'TOO QUIET'})", flush=True)
-                    if rms <= min_rms:
-                        print("Too quiet. Speak louder and try again.", flush=True)
-                        continue
-                    debug_path = ROOT / "last_recording.wav"
-                    import wave
-                    with wave.open(str(debug_path), "wb") as wav:
-                        wav.setnchannels(1)
-                        wav.setsampwidth(2)
-                        wav.setframerate(16000)
-                        wav.writeframes(audio)
-                    # Transcribe
-                    text = stt.transcribe(str(debug_path))
-                    if not text.strip():
-                        print("Could not transcribe. Check last_recording.wav", flush=True)
-                        continue
-                    print(f"You said: {_display_text(text)}", flush=True)
-                    try_open_browser_from_intent(text, tool_router)
-                    max_words = config.get("voice", {}).get("max_response_words", 50)
-                    print("JARVIS: ", end="", flush=True)
-                    response, latency = invoke_jarvis(graph, text, stream_callback=None, max_words=max_words, config=config, memory=memory)
-                    show_latency = config.get("show_latency", True)
-                    lat_str = f" [{latency:.1f}s]" if show_latency else ""
-                    print(_display_text(response) + lat_str, flush=True)
-                    memory.save_interaction(text, response)
-                    print()  # blank line before next prompt
-                    wav_path = tts.synthesize(response)
-                    try:
-                        import sounddevice as sd
-                        import soundfile as sf
-                        data, sr = sf.read(wav_path)
-                        sd.play(data, sr)
-                        sd.wait()
-                    except Exception:
-                        pass
-                except Exception as e:
-                    print(f"Error: {e}", flush=True)
+                audio = recorder.record_fixed(seconds=record_seconds)
+                details = _transcribe_audio(audio, preferred_language="he" if hebrew_first else None)
+                if not details:
+                    print("No valid speech detected. Try again.", flush=True)
+                    continue
+                text = details.get("text", "")
+                lang_hint = (details.get("language") or "").lower()
+                print(f"You said: {_display_text(text)}", flush=True)
+                print("JARVIS: ", end="", flush=True)
+                _run_turn(text, language_hint=lang_hint, announce_thinking=True)
+                print()
             except (EOFError, KeyboardInterrupt):
                 break
+            except Exception as e:
+                print(f"Error: {e}", flush=True)
     elif wake and not console_mode:
-        # Verbose in voice mode so user sees wake detection and processing
-        verbose = config.get("general", {}).get("debug", False) or config.get("debug", False) or "--mode" in sys.argv
-        show_scores = config.get("wake_word", {}).get("show_scores", False) or "--debug-wake" in sys.argv
+        show_scores = wake_cfg.get("show_scores", False) or "--debug-wake" in sys.argv
         if verbose:
-            print("Listening for 'Hey Jarvis' (say it now)...", flush=True)
+            from voice.tts import _rtl_display
+            hebrew_wake = _rtl_display("היי ג'ארוויס")
+            print(f"Listening for wake word: \"Hey Jarvis\" / \"{hebrew_wake}\"...", flush=True)
         if show_scores:
-            print("Debug: showing wake scores every ~4s. Say 'Hey Jarvis' to test.", flush=True)
+            print("Debug: showing wake scores every ~4s.", flush=True)
         try:
             wake.listen(on_detected=on_wake, verbose=verbose, show_scores=show_scores)
         except Exception as e:
             print(f"[Wake] Listener error: {e}", flush=True)
     else:
-        # Fallback: no wake word, just run a simple input loop for testing
-        max_words = config.get("voice", {}).get("max_response_words", 50)
         while not stop_event.is_set():
             try:
                 text = input("You: ").strip()
                 if not text:
                     continue
-                try_open_browser_from_intent(text, tool_router)
                 print("JARVIS: ", end="", flush=True)
-                response, latency = invoke_jarvis(graph, text, stream_callback=None, max_words=max_words, config=config, memory=memory)
-                show_latency = config.get("show_latency", True)
-                lat_str = f" [{latency:.1f}s]" if show_latency else ""
-                print(_display_text(response) + lat_str, flush=True)
-                memory.save_interaction(text, response)
-                wav_path = tts.synthesize(response)
-                try:
-                    import sounddevice as sd
-                    import soundfile as sf
-                    data, sr = sf.read(wav_path)
-                    sd.play(data, sr)
-                    sd.wait()
-                except Exception:
-                    pass
+                _run_turn(text, language_hint=None, announce_thinking=False)
             except (EOFError, KeyboardInterrupt):
                 break
 
@@ -545,7 +594,6 @@ def create_tray_icon(config: dict):
     import pystray
     from PIL import Image
 
-    # Create a simple icon
     size = 64
     img = Image.new("RGB", (size, size), color=(30, 60, 120))
     icon = pystray.Icon("jarvis", img, "JARVIS")
@@ -558,7 +606,12 @@ def create_tray_icon(config: dict):
         if loop_thread and loop_thread.is_alive():
             return
         stop_event.clear()
-        loop_thread = threading.Thread(target=run_jarvis_loop, args=(config, stop_event), kwargs={"console_mode": False}, daemon=True)
+        loop_thread = threading.Thread(
+            target=run_jarvis_loop,
+            args=(config, stop_event),
+            kwargs={"console_mode": False},
+            daemon=True,
+        )
         loop_thread.start()
 
     def on_stop(icon, item):
@@ -579,28 +632,30 @@ def create_tray_icon(config: dict):
 def main():
     config = load_config()
 
-    # Console mode: text input, no tray
+    # Console mode: text input, no tray.
     if "--console" in sys.argv or "-c" in sys.argv:
         print("JARVIS console mode. Type your message and press Enter. Ctrl+C to quit.")
         stop_event = threading.Event()
         run_jarvis_loop(config, stop_event, console_mode=True)
         return
 
-    # Voice mode: wake word + voice directly, no tray (runs in foreground)
+    # Voice mode: wake word + voice directly, no tray.
     if "--mode" in sys.argv:
         idx = sys.argv.index("--mode")
         mode = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else ""
         if mode.lower() == "voice":
             push_to_talk = "--push-to-talk" in sys.argv or "-p" in sys.argv
             if push_to_talk:
-                print("JARVIS push-to-talk. Press Enter, speak, press Enter again. Ctrl+C to quit.")
+                print("JARVIS push-to-talk. Press Enter to record. Ctrl+C to quit.")
             else:
-                print("JARVIS voice mode. Say 'Hey Jarvis' then speak. Ctrl+C to quit.")
+                from voice.tts import _rtl_display
+                hebrew_wake = _rtl_display("היי ג'ארוויס")
+                print(f"JARVIS voice mode. Say 'Hey Jarvis' or '{hebrew_wake}'. Ctrl+C to quit.")
             stop_event = threading.Event()
             run_jarvis_loop(config, stop_event, console_mode=False, push_to_talk=push_to_talk)
             return
 
-    # System tray mode (default)
+    # System tray mode (default).
     print("JARVIS tray mode. Look for the icon in your system tray (bottom-right).")
     print("Right-click the icon -> Start to begin. The terminal will stay open.", flush=True)
     icon = create_tray_icon(config)

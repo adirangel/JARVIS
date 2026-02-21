@@ -51,3 +51,11 @@ def test_ensure_complete_sentence():
     assert _ensure_complete_sentence("Hello, Sir.") == "Hello, Sir."
     assert _ensure_complete_sentence("As you wish") == "As you wish Pardon the interruption, Sir."
     assert _ensure_complete_sentence("") == ""
+
+
+def test_has_voice_activity_empty_audio_rejected():
+    from voice.validation import has_voice_activity
+
+    ok, reason = has_voice_activity(b"", sample_rate=16000)
+    assert ok is False
+    assert reason == "empty_audio"

@@ -100,3 +100,10 @@ def test_has_fastpath_node():
         assert "time_handler" in node_names, f"Expected time_handler in {node_names}"
     except Exception as e:
         pytest.skip(f"Graph creation failed (Ollama may not be running): {e}")
+
+
+def test_no_truncation_when_max_words_zero():
+    from agent.graph import _truncate_words
+
+    text = "One two three four five six seven."
+    assert _truncate_words(text, max_words=0) == text

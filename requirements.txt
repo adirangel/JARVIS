@@ -10,12 +10,15 @@ langchain-core>=0.3.0
 # Voice
 faster-whisper
 piper-tts
-edge-tts
 huggingface_hub
 openwakeword
 sounddevice
 soundfile
 numpy
+webrtcvad-wheels
+
+# Optional remote fallback for Hebrew TTS (disabled by default)
+edge-tts
 
 # System tray & scheduling
 pystray

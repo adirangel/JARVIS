@@ -22,6 +22,13 @@ _DEFAULT_MIN_WORDS = 3
 
 logger = logging.getLogger(__name__)
 
+try:
+    import webrtcvad
+    WEBRTC_VAD_AVAILABLE = True
+except ImportError:
+    WEBRTC_VAD_AVAILABLE = False
+    webrtcvad = None
+
 
 def is_valid_transcript(
     text: str,
@@ -61,3 +68,47 @@ def is_valid_transcript(
         return False, "noise_artifact"
 
     return True, ""
+
+
+def has_voice_activity(
+    audio_bytes: bytes,
+    sample_rate: int = 16000,
+    min_speech_ratio: float = 0.08,
+    vad_aggressiveness: int = 2,
+) -> tuple[bool, str]:
+    """Pre-STT VAD gate to reject background noise before Whisper.
+
+    Uses WebRTC VAD when available; falls back to RMS-only acceptance.
+    """
+    if not audio_bytes:
+        return False, "empty_audio"
+
+    if not WEBRTC_VAD_AVAILABLE:
+        return True, "vad_unavailable"
+
+    try:
+        if sample_rate not in (8000, 16000, 32000, 48000):
+            return True, "unsupported_sample_rate"
+
+        frame_ms = 30
+        frame_size = int(sample_rate * frame_ms / 1000) * 2  # int16 bytes
+        if frame_size <= 0 or len(audio_bytes) < frame_size:
+            return False, "audio_too_short_for_vad"
+
+        vad = webrtcvad.Vad(max(0, min(int(vad_aggressiveness), 3)))
+        total = 0
+        speech = 0
+        for i in range(0, len(audio_bytes) - frame_size + 1, frame_size):
+            frame = audio_bytes[i : i + frame_size]
+            total += 1
+            if vad.is_speech(frame, sample_rate):
+                speech += 1
+
+        if total == 0:
+            return False, "no_frames"
+
+        ratio = speech / float(total)
+        return ratio >= float(min_speech_ratio), f"speech_ratio={ratio:.3f}"
+    except Exception as e:
+        logger.debug("[STT validation] VAD error: %s", e)
+        return True, "vad_error_fallback"

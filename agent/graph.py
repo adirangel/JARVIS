@@ -183,15 +183,17 @@ def create_jarvis_graph(
     return graph
 
 
-def _truncate_words(text: str, max_words: int = 50) -> str:
-    """Limit response to max_words. Adds ... if truncated. Never cut mid-sentence."""
+def _truncate_words(text: str, max_words: int | None = 0) -> str:
+    """Optional word limiter. max_words<=0 disables truncation."""
     if not text or not text.strip():
         return text
+    if max_words is None or int(max_words) <= 0:
+        return _ensure_complete_sentence(text)
     words = text.split()
-    if len(words) <= max_words:
+    if len(words) <= int(max_words):
         return _ensure_complete_sentence(text)
     # Truncate at word boundary, add ellipsis
-    truncated = " ".join(words[:max_words]) + "..."
+    truncated = " ".join(words[: int(max_words)]) + "..."
     return _ensure_complete_sentence(truncated)
 
 
@@ -252,7 +254,7 @@ def invoke_jarvis(
     user_message: str,
     thread_id: str = "default",
     stream_callback: Optional[callable] = None,
-    max_words: int = 50,
+    max_words: int | None = 0,
     config: Optional[dict] = None,
     memory: Optional[Any] = None,
     use_fast_path: bool = True,

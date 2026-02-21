@@ -29,7 +29,7 @@ class WakeWordDetector:
     def __init__(
         self,
         model_names: Optional[list[str]] = None,
-        threshold: float = 0.35,
+        threshold: float = 0.75,
         device: Optional[int] = None,
         wake_confidence: Optional[float] = None,
         noise_gate_rms: Optional[float] = None,
@@ -38,7 +38,8 @@ class WakeWordDetector:
             raise ImportError("openwakeword required. pip install openwakeword")
         self._model_names = model_names or ["hey_jarvis_v0.1"]
         # Prefer wake_confidence (0.7-0.85) over legacy threshold for fewer false positives
-        self._threshold = wake_confidence if wake_confidence is not None else threshold
+        base = wake_confidence if wake_confidence is not None else threshold
+        self._threshold = max(0.0, min(float(base), 1.0))
         self._device = device
         self._model = None
         # Noise gate: skip prediction if chunk RMS below this (reduces false triggers)
@@ -73,6 +74,8 @@ class WakeWordDetector:
 
     def detect(self, audio_chunk: bytes) -> bool:
         """True if wake word detected above threshold."""
+        if not self._chunk_has_speech(audio_chunk):
+            return False
         preds = self.predict(audio_chunk)
         for scores in preds.values():
             if hasattr(scores, "__iter__") and scores:

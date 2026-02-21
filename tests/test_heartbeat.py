@@ -46,3 +46,28 @@ def test_heartbeat_job_idle():
     assert len(spoken) == 1
     assert "Sir" in spoken[0]
     assert "nominal" in spoken[0].lower() or "awaiting" in spoken[0].lower()
+
+
+def test_start_heartbeat_allow_run_guard():
+    from heartbeat import start_heartbeat
+
+    class MockMemory:
+        def get_pending_tasks(self):
+            return [{"id": 1, "description": "x"}]
+        def get_reminders(self):
+            return []
+
+    spoken = []
+
+    def mock_tts(text):
+        spoken.append(text)
+
+    # Start and immediately stop-like behavior by disallowing execution.
+    t = start_heartbeat(
+        MockMemory(),
+        mock_tts,
+        llm_invoke=None,
+        interval_minutes=1,
+        allow_run=lambda: False,
+    )
+    assert t is not None

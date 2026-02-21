@@ -71,9 +71,19 @@ def start_heartbeat(
     tts_speak: Callable[[str], None],
     llm_invoke: Optional[Callable[[str], str]] = None,
     interval_minutes: int = 30,
+    allow_run: Optional[Callable[[], bool]] = None,
 ) -> Any:
     """Start APScheduler heartbeat in separate low-priority thread. Never blocks main response."""
     import threading
+
+    def _safe_job() -> None:
+        if allow_run is not None:
+            try:
+                if not allow_run():
+                    return
+            except Exception:
+                return
+        heartbeat_job(memory, tts_speak, llm_invoke=llm_invoke)
 
     def _run_scheduler() -> None:
         try:
@@ -92,11 +102,9 @@ def start_heartbeat(
         from apscheduler.schedulers.background import BackgroundScheduler
         scheduler = BackgroundScheduler()
         scheduler.add_job(
-            heartbeat_job,
+            _safe_job,
             "interval",
             minutes=interval_minutes,
-            args=[memory, tts_speak],
-            kwargs={"llm_invoke": llm_invoke},
         )
         scheduler.start()
         # Keep thread alive so scheduler reference isn't GC'd
