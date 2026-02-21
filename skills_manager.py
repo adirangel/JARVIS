@@ -1,3 +1,29 @@
+import ast
+import sys
+from typing import Dict
+
+SANDBOXED_OPERATIONS = ['import']
+
+def ast_sandbox_check(code: str) -> (bool, str):
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        return False, f'Syntax error: {e}'
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name not in ALLOWED_MODULES:
+                    return False, f'Import of {alias.name} is not allowed'
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                if node.func.id in ('eval', 'exec', 'open', 'compile', '__import__'):
+                    return False, f'Use of {node.func.id} is blocked for security'
+    return True, ''
+
+ALLOWED_MODULES = [
+    'os', 'sys', 'json', 're', 'datetime', 'math', 'random', 'collections', 'itertools', 'functools', 'typing', 'pathlib', 'shlex', 'subprocess', 'tempfile', 'textwrap', 'string', 'copy', 'pprint', 'statistics', 'decimal', 'fractions', 'csv', 'hashlib', 'base64', 'urllib.parse', 'platform', 'socket', 'time', 'logging'
+]
+
 """Self-evolution: learn_new_skill tool.
 
 User: "Jarvis, learn how to control Spotify"
