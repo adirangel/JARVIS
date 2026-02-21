@@ -7,7 +7,7 @@ Logs rejected transcriptions for debugging.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Iterable, Optional
 
 # Common noise artifacts - Whisper often hallucinates these from silence/background
 _NOISE_ARTIFACTS = frozenset({
@@ -34,10 +34,12 @@ def is_valid_transcript(
     min_words: int = _DEFAULT_MIN_WORDS,
     noise_artifacts: Optional[frozenset] = None,
     log_rejections: bool = True,
+    allowed_short: Optional[Iterable[str]] = None,
 ) -> tuple[bool, str]:
     """Validate transcribed text. Returns (is_valid, reason).
 
     Rejects: empty, too short (< min_words), or known noise artifacts.
+    allowed_short: phrases that are always valid even if < min_words (e.g. "stop", "goodbye").
     Logs false positives when log_rejections=True for debugging.
     """
     artifacts = noise_artifacts or _NOISE_ARTIFACTS
@@ -47,14 +49,22 @@ def is_valid_transcript(
             logger.debug("[STT validation] Rejected: empty transcript (false positive)")
         return False, "empty"
 
-    words = t.lower().split()
+    t_lower = t.lower()
+    # Allow short commands like "stop", "goodbye", "exit" even if < min_words
+    if allowed_short:
+        allowed_lower = [p.strip().lower() for p in allowed_short if p and p.strip()]
+        if t_lower in allowed_lower:
+            return True, ""
+        if any(phrase in t_lower for phrase in allowed_lower):
+            return True, ""
+
+    words = t_lower.split()
     if len(words) < min_words:
         if log_rejections:
             logger.debug("[STT validation] Rejected: too short (%d words) - %r", len(words), t[:80])
         return False, "too_short"
 
     # Exact match or single-word artifact
-    t_lower = t.lower()
     if t_lower in artifacts:
         if log_rejections:
             logger.debug("[STT validation] Rejected: noise artifact - %r", t)

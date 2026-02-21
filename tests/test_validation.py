@@ -36,6 +36,17 @@ def test_too_short_rejected():
     assert reason == "too_short"
 
 
+def test_allowed_short_commands():
+    """Short commands like 'stop', 'goodbye' should be accepted even with min_words=3."""
+    from voice.validation import is_valid_transcript
+    valid, _ = is_valid_transcript("stop", min_words=3, allowed_short=["stop", "goodbye", "exit"])
+    assert valid is True
+    valid, _ = is_valid_transcript("goodbye", min_words=3, allowed_short=["stop", "goodbye"])
+    assert valid is True
+    valid, _ = is_valid_transcript("please stop", min_words=3, allowed_short=["stop", "goodbye"])
+    assert valid is True
+
+
 def test_noise_artifact_rejected():
     from voice.validation import is_valid_transcript
     valid, reason = is_valid_transcript("thank you", min_words=2)
