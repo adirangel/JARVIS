@@ -1,7 +1,8 @@
 """LangGraph nodes - hybrid LLM routing.
 
-Planner & Reflector: DictaLM (conversation_model)
-Tool Executor & SelfImprove: Qwen3 (tool_model)
+- Planner: DictaLM (conversation_model) - intent, planning, tool selection
+- Reflector: DictaLM (conversation_model) - final response with personality
+- Tool Executor: No LLM - executes tools; learn_new_skill uses Qwen3 (tool_model) for code gen
 """
 
 from __future__ import annotations
@@ -94,9 +95,9 @@ def tool_executor_node(
     state: dict,
     tool_router: Any,
 ) -> dict:
-    """Qwen3: Executes tool calls. Uses tool_model for structured output.
+    """Executes tool calls (no LLM). Planner provides tool names/args; we run them.
 
-    Runs tools, returns results to state.
+    learn_new_skill uses Qwen3 via skills_manager._invoke_tool_llm for code generation.
     """
     tool_calls = state.get("tool_calls", [])
     messages = state.get("messages", [])
@@ -147,7 +148,9 @@ def reflector_node(
     if not messages:
         return state
 
-    system = SystemMessage(content=system_prompt)
+    # Personality reminder: Paul Bettany JARVIS - dry British wit, address as Sir
+    personality_reminder = "CRITICAL: Stay in character. Paul Bettany JARVIS. Dry British wit. Address as Sir or אדוני."
+    system = SystemMessage(content=personality_reminder + "\n\n" + system_prompt)
     msgs = [system] + list(messages)
     stream_cb = _stream_callback.get()
 

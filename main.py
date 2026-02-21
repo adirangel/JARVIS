@@ -63,6 +63,8 @@ def create_tts(config: dict):
         quality=v.get("tts_quality", "medium"),
         hebrew_voice=v.get("hebrew_voice", "he-IL-AvriNeural"),
         speed=v.get("tts_speed", 1.15),
+        force_hebrew_tts=v.get("force_hebrew_tts", False),
+        preload=v.get("preload_tts", False),
     )
 
 
@@ -97,6 +99,48 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
         print("Loading STT (first run may download model)...", flush=True)
     stt = create_stt(config)
     stt._ensure_model()
+
+    # Heartbeat: witty voiced summary every 30 min (even when idle)
+    def _tts_speak(text: str) -> None:
+        try:
+            wav_path = tts.synthesize(text)
+            import sounddevice as sd
+            import soundfile as sf
+            data, sr = sf.read(wav_path)
+            sd.play(data, sr)
+            sd.wait()
+        except Exception:
+            pass
+
+    def _llm_invoke(prompt: str) -> str:
+        try:
+            from langchain_ollama import ChatOllama
+            from langchain_core.messages import SystemMessage, HumanMessage
+            llm_cfg = config.get("llm", {})
+            conv_model = llm_cfg.get("conversation_model", "aminadaven/dictalm2.0-instruct:q5_K_M")
+            base_url = llm_cfg.get("host", "http://localhost:11434")
+            if base_url and not base_url.startswith("http"):
+                base_url = f"http://{base_url}"
+            llm = ChatOllama(model=conv_model, base_url=base_url, temperature=0.7)
+            resp = llm.invoke([
+                SystemMessage(content="You are JARVIS. Brief, dry wit. Address user as Sir."),
+                HumanMessage(content=prompt),
+            ])
+            return resp.content if hasattr(resp, "content") else str(resp)
+        except Exception:
+            return ""
+
+    hb_cfg = config.get("heartbeat", {})
+    interval = hb_cfg.get("interval_minutes", 30)
+    try:
+        from heartbeat import start_heartbeat
+        start_heartbeat(memory, _tts_speak, _llm_invoke, interval_minutes=interval)
+        if verbose:
+            print(f"Heartbeat started (every {interval} min).", flush=True)
+    except Exception as e:
+        if verbose:
+            print(f"Heartbeat not started: {e}", flush=True)
+
     if console_mode:
         print("Ready. Type your message below.", flush=True)
     elif verbose:

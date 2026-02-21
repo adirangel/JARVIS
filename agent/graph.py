@@ -1,8 +1,11 @@
 """LangGraph state machine with hybrid LLM routing.
 
-Per-node binding:
-- Planner, Reflector: DictaLM (conversation_model)
-- Tool Executor: Qwen3 (tool_model) - executes tools
+Hybrid routing (per config.yaml):
+- Planner: DictaLM (conversation_model) - intent, planning, tool selection
+- Reflector: DictaLM (conversation_model) - final response with Paul Bettany personality
+- Tool Executor: No LLM - executes tool calls from planner
+- learn_new_skill: Qwen3 (tool_model) via skills_manager for code generation
+
 SQLite checkpointer for persistence.
 """
 
@@ -11,7 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
-from agent.personality import JARVIS_SYSTEM_PROMPT
+from agent.personality import JARVIS_SYSTEM_PROMPT, PLANNER_PROMPT, REFLECTOR_PROMPT
 from agent.tools import ToolRouter, create_tool_router
 
 
@@ -51,6 +54,7 @@ def create_jarvis_graph(
         error: str
 
     # Node factories (partial application for config)
+    # Planner: DictaLM - intent, planning, tool selection
     def make_planner(state: dict) -> dict:
         from agent.nodes import planner_node
         return planner_node(
@@ -58,21 +62,23 @@ def create_jarvis_graph(
             conversation_model=conv_model,
             tool_model=tool_model,
             base_url=base_url,
-            system_prompt=JARVIS_SYSTEM_PROMPT,
+            system_prompt=PLANNER_PROMPT,
             tool_router=tool_router,
         )
 
+    # Tool Executor: No LLM - executes tool calls from planner
     def make_tool_exec(state: dict) -> dict:
         from agent.nodes import tool_executor_node
         return tool_executor_node(state, tool_router=tool_router)
 
+    # Reflector: DictaLM - final response with Paul Bettany personality
     def make_reflector(state: dict) -> dict:
         from agent.nodes import reflector_node
         return reflector_node(
             state,
             conversation_model=conv_model,
             base_url=base_url,
-            system_prompt=JARVIS_SYSTEM_PROMPT,
+            system_prompt=REFLECTOR_PROMPT,
         )
 
     # Build graph

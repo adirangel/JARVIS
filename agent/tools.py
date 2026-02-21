@@ -327,6 +327,13 @@ LEARN_NEW_SKILL_TOOL = _to_ollama_tool(
     {"properties": {"skill_description": {"type": "string", "description": "What to learn, e.g. 'control Spotify'"}}, "required": ["skill_description"]},
 )
 
+# --- Approve New Skill (register pending skill from learn_new_skill) ---
+APPROVE_NEW_SKILL_TOOL = _to_ollama_tool(
+    "approve_new_skill",
+    "When user says 'approve the new skill' or 'אשר את המיומנות': register the pending skill from learn_new_skill.",
+    {"properties": {}, "required": []},
+)
+
 
 COMPUTER_CONTROL_TOOL = _to_ollama_tool(
     "computer_control",
@@ -353,6 +360,7 @@ class ToolRouter:
         self._config = config or {}
         self._tools: dict[str, Callable[..., str]] = {}
         self._ollama_tools: list[dict] = []
+        self._skill_tool_names: set[str] = set()
         self._register_defaults()
 
     def _register_defaults(self) -> None:
@@ -388,6 +396,11 @@ class ToolRouter:
             )
         self.register("learn_new_skill", _learn_skill, LEARN_NEW_SKILL_TOOL)
 
+        def _approve_skill(**kw):
+            from skills_manager import approve_new_skill
+            return approve_new_skill(tool_router=self)
+        self.register("approve_new_skill", _approve_skill, APPROVE_NEW_SKILL_TOOL)
+
     def register(self, name: str, execute_fn: Callable[..., str], ollama_spec: dict) -> None:
         self._tools[name] = execute_fn
         # Avoid duplicate ollama specs
@@ -420,19 +433,47 @@ class ToolRouter:
     def get_tool_names(self) -> list[str]:
         return list(self._tools.keys())
 
+    def _load_skills(self) -> None:
+        """Load skill modules from ./skills/ and register them."""
+        import importlib.util
+        import sys
+        skills_dir = Path(__file__).parent.parent / "skills"
+        if not skills_dir.exists():
+            return
+        root = str(skills_dir.parent)
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        for f in sorted(skills_dir.glob("*.py")):
+            if f.name.startswith("_") or f.name == "base.py":
+                continue
+            try:
+                spec = importlib.util.spec_from_file_location(f"skill_{f.stem}", f)
+                if spec is None or spec.loader is None:
+                    continue
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                name = getattr(mod, "TOOL_NAME", None)
+                desc = getattr(mod, "TOOL_DESC", "Skill")
+                params = getattr(mod, "TOOL_PARAMS", {"properties": {}, "required": []})
+                execute_fn = getattr(mod, "execute", None)
+                if name and callable(execute_fn):
+                    ollama_spec = _to_ollama_tool(name, desc, params)
+                    self.register(name, execute_fn, ollama_spec)
+                    self._skill_tool_names.add(name)
+            except Exception:
+                pass
+
+    def reload_skills(self) -> None:
+        """Remove skill tools and reload from ./skills/."""
+        for name in list(self._skill_tool_names):
+            self._tools.pop(name, None)
+            self._ollama_tools = [t for t in self._ollama_tools if t.get("function", {}).get("name") != name]
+        self._skill_tool_names.clear()
+        self._load_skills()
+
 
 def create_tool_router(config: Optional[dict] = None) -> ToolRouter:
     """Create tool router with default + dynamically loaded skills."""
     router = ToolRouter(config)
-    # Load skills from ./skills/
-    skills_dir = Path(__file__).parent.parent / "skills"
-    if skills_dir.exists():
-        for f in skills_dir.glob("*.py"):
-            if f.name.startswith("_"):
-                continue
-            try:
-                # Dynamic skill loading - skills_manager registers these
-                pass
-            except Exception:
-                pass
+    router._load_skills()
     return router

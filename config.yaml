@@ -23,6 +23,8 @@ voice:
   tts_voice: "jgkawell/jarvis"
   tts_quality: "medium"
   hebrew_voice: "he-IL-AvriNeural"  # fallback when Hebrew detected
+  force_hebrew_tts: false  # true = always use edge-tts (Hebrew voice for all)
+  preload_tts: false  # true = warm up TTS at startup (reduces first-response latency)
   tts_speed: 1.15  # Piper: length_scale inverse (0.85 = faster). Edge: rate "+15%"
   max_response_words: 50  # Keep responses brief for voice
   min_rms: 0.0010  # Don't respond if recording is quieter. 0.002 was too strict for some mics.

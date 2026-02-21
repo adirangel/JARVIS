@@ -26,7 +26,8 @@ try:
 except ImportError:
     EDGE_TTS_AVAILABLE = False
 
-_HEBREW_RE = re.compile(r"[\u0590-\u05FF]")
+# Hebrew block + Niqqud + presentation forms (e.g. final letters)
+_HEBREW_RE = re.compile(r"[\u0590-\u05FF\uFB1D-\uFB4F]")
 
 
 def _has_hebrew(text: str) -> bool:
@@ -83,10 +84,17 @@ class PiperTTS:
 class HybridTTS:
     """Piper for English, edge-tts for Hebrew (correct RTL pronunciation)."""
 
-    def __init__(self, quality: str = "medium", hebrew_voice: str = "he-IL-AvriNeural", speed: float = 1.15):
+    def __init__(
+        self,
+        quality: str = "medium",
+        hebrew_voice: str = "he-IL-AvriNeural",
+        speed: float = 1.15,
+        force_hebrew_tts: bool = False,
+    ):
         self._piper = PiperTTS(quality=quality, length_scale=1.0 / speed) if PIPER_AVAILABLE else None
         self._hebrew_voice = hebrew_voice
         self._speed = speed
+        self._force_hebrew_tts = force_hebrew_tts
 
     def synthesize(self, text: str, output_path: Optional[str] = None) -> str:
         if not text or not text.strip():
@@ -96,18 +104,27 @@ class HybridTTS:
             output_path = f.name
             f.close()
 
-        if _has_hebrew(text) and EDGE_TTS_AVAILABLE:
+        use_hebrew = self._force_hebrew_tts or (_has_hebrew(text) and EDGE_TTS_AVAILABLE)
+        if use_hebrew and EDGE_TTS_AVAILABLE:
             self._synthesize_hebrew(text, output_path)
         else:
             self._synthesize_piper(text, output_path)
         return output_path
 
     def _synthesize_hebrew(self, text: str, output_path: str) -> None:
-        """Use edge-tts for Hebrew (correct RTL, native pronunciation)."""
+        """Use edge-tts for Hebrew (async to reduce blocking)."""
         pct = int((self._speed - 1) * 100)
         rate = f"+{pct}%" if pct >= 0 else f"{pct}%"
         comm = edge_tts.Communicate(text, self._hebrew_voice, rate=rate)
-        comm.save_sync(output_path)
+
+        # Use async save in thread to avoid blocking main thread (reduces perceived latency)
+        try:
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                future = ex.submit(asyncio.run, comm.save(output_path))
+                future.result(timeout=30)
+        except Exception:
+            comm.save_sync(output_path)
 
     def _synthesize_piper(self, text: str, output_path: str) -> None:
         """Use Piper for English."""
@@ -122,6 +139,19 @@ def create_tts(
     quality: str = "medium",
     hebrew_voice: Optional[str] = None,
     speed: float = 1.15,
+    force_hebrew_tts: bool = False,
+    preload: bool = False,
 ):
-    """Create TTS. Uses Piper (English) + edge-tts (Hebrew when detected). speed>1 = faster."""
-    return HybridTTS(quality=quality, hebrew_voice=hebrew_voice or "he-IL-AvriNeural", speed=speed)
+    """Create TTS. Piper (English) + edge-tts (Hebrew). force_hebrew_tts=always edge-tts. preload=warm up at init."""
+    tts = HybridTTS(
+        quality=quality,
+        hebrew_voice=hebrew_voice or "he-IL-AvriNeural",
+        speed=speed,
+        force_hebrew_tts=force_hebrew_tts,
+    )
+    if preload:
+        try:
+            tts.synthesize("Okay")
+        except Exception:
+            pass
+    return tts

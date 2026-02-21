@@ -14,6 +14,7 @@ from typing import Any, Optional
 
 # Skills directory
 SKILLS_DIR = Path(__file__).parent / "skills"
+PENDING_SKILL_FILE = Path(__file__).parent / "data" / "pending_skill.txt"
 
 
 def _web_search(query: str, max_results: int = 5) -> str:
@@ -54,6 +55,8 @@ def learn_new_skill(
     llm_cfg = config.get("llm", {})
     tool_model = llm_cfg.get("tool_model", "qwen3:4b")
     base_url = llm_cfg.get("host", "http://localhost:11434")
+    if base_url and not base_url.startswith("http"):
+        base_url = f"http://{base_url}"
 
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -61,18 +64,20 @@ def learn_new_skill(
     search_query = f"{skill_description} API Python control"
     search_results = _web_search(search_query, max_results=5)
 
-    # 2. Qwen3: generate Python tool
+    # 2. Qwen3: generate Python tool (skill contract: TOOL_NAME, TOOL_DESC, TOOL_PARAMS, execute)
     prompt = f"""Create a Python tool module for: {skill_description}
 
 Search results:
 {search_results[:3000]}
 
-Requirements:
-- Single file in ./skills/ with a class that has execute(**kwargs) -> str
-- Use standard libraries or commonly available packages
-- Return a string result
-- Include error handling
-- Name the file with underscores, e.g. spotify_control.py
+Requirements - MUST export these at module level:
+- TOOL_NAME: str (e.g. "spotify_control")
+- TOOL_DESC: str (one line for LLM)
+- TOOL_PARAMS: dict with "properties" and "required" (Ollama format)
+- def execute(**kwargs) -> str: (implementation, return string result)
+
+Use standard libraries or commonly available packages. Include error handling.
+Name the file with underscores, e.g. spotify_control.py
 
 Output ONLY the Python code, no markdown or explanation."""
 
@@ -108,4 +113,29 @@ Output ONLY the Python code, no markdown or explanation."""
     except subprocess.TimeoutExpired:
         return f"Skill test timed out. Code saved to {skill_path}. Please review manually."
 
-    return f"Skill generated and validated: {skill_path}\n\nPlease approve to register. Say 'Jarvis, approve the new skill' to register."
+    # Store pending for approve_new_skill
+    PENDING_SKILL_FILE.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        PENDING_SKILL_FILE.write_text(str(skill_path), encoding="utf-8")
+    except Exception:
+        pass
+
+    return f"Skill validated: {skill_path.name}. Say 'Jarvis, approve the new skill' or 'אשר את המיומנות' to register."
+
+
+def approve_new_skill(tool_router: Optional[Any] = None) -> str:
+    """Approve the pending skill and reload it into the tool router."""
+    if not PENDING_SKILL_FILE.exists():
+        return "No skill pending approval, Sir."
+    try:
+        path_str = PENDING_SKILL_FILE.read_text(encoding="utf-8").strip()
+        skill_path = Path(path_str)
+        if not skill_path.exists():
+            PENDING_SKILL_FILE.unlink(missing_ok=True)
+            return "Pending skill file no longer exists, Sir."
+        if tool_router and hasattr(tool_router, "reload_skills"):
+            tool_router.reload_skills()
+        PENDING_SKILL_FILE.unlink(missing_ok=True)
+        return f"Skill approved and registered: {skill_path.name}. At your service, Sir."
+    except Exception as e:
+        return f"I apologise, Sir. Approval failed: {e}"
