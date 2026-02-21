@@ -4,8 +4,11 @@
 # Single model: qwen3:4b for ALL tasks (conversation, planning, reflection, tools, self-evolution).
 
 llm:
-  model: "qwen3:4b"
-  host: "http://localhost:11434"
+  # provider: "ollama" | "openrouter"
+  provider: "openrouter"
+  model: "stepfun/step-3.5-flash:free"
+  api_key: ""  # Paste your OpenRouter API key here, or set OPENROUTER_API_KEY env var
+  host: "http://localhost:11434"  # Used only when provider=ollama
   temperature: 0.7
   max_tokens: 256
   context_window: 6
@@ -60,8 +63,8 @@ voice:
 
 wake_word:
   models: ["hey_jarvis_v0.1"]
-  threshold: 0.75  # Legacy alias - use wake_confidence if set
-  wake_confidence: 0.78  # 0.75-0.85 reduces false positives (higher = stricter)
+  threshold: 0.0015  # Legacy alias - use wake_confidence if set
+  wake_confidence: 0.0015  # Lower = more sensitive (easier to trigger "Hey Jarvis")
   device: null
   cooldown_seconds: 3
   noise_gate_rms: 0.005

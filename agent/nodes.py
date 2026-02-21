@@ -28,17 +28,22 @@ def _get_llm(
     temperature: float = 0.7,
     num_predict: Optional[int] = None,
     num_ctx: Optional[int] = None,
+    llm_config: Optional[dict] = None,
 ):
-    from langchain_ollama import ChatOllama
-    kwargs = {"model": model, "base_url": base_url, "temperature": temperature}
-    model_kwargs = {}
-    if num_predict is not None:
-        model_kwargs["num_predict"] = num_predict
-    if num_ctx is not None:
-        model_kwargs["num_ctx"] = num_ctx
-    if model_kwargs:
-        kwargs["model_kwargs"] = model_kwargs
-    return ChatOllama(**kwargs)
+    from agent.llm_factory import get_llm
+
+    cfg = llm_config or {}
+    provider = cfg.get("provider", "ollama")
+    api_key = cfg.get("api_key")
+    return get_llm(
+        model=model,
+        base_url=base_url,
+        temperature=temperature,
+        num_predict=num_predict,
+        num_ctx=num_ctx,
+        provider=provider,
+        api_key=api_key,
+    )
 
 
 def listener_node(state: dict) -> dict:
@@ -66,6 +71,7 @@ def fastpath_node(
         temperature=llm_cfg.get("reflector_temperature", 0.5),
         num_predict=llm_cfg.get("max_tokens", 128),
         num_ctx=llm_cfg.get("num_ctx_reflector", 4096),
+        llm_config=llm_cfg,
     )
     messages = state.get("messages", [])
     if not messages:
@@ -148,6 +154,7 @@ def planner_node(
         temperature=llm_cfg.get("planner_temperature", 0.5),
         num_predict=llm_cfg.get("planner_max_tokens", 512),
         num_ctx=llm_cfg.get("num_ctx_planner", 8192),
+        llm_config=llm_cfg,
     )
     messages = state.get("messages", [])
     if not messages:
@@ -360,6 +367,7 @@ def reflector_node(
         temperature=llm_cfg.get("reflector_temperature", 0.5),
         num_predict=llm_cfg.get("max_tokens", 256),
         num_ctx=llm_cfg.get("num_ctx_reflector", 4096),
+        llm_config=llm_cfg,
     )
     messages = state.get("messages", [])
 
@@ -411,6 +419,7 @@ def heartbeat_node(
     model: str,
     base_url: str,
     tts_callback: Optional[callable] = None,
+    llm_config: Optional[dict] = None,
 ) -> dict:
     """Check memory for pending tasks/reminders, execute, speak witty summary."""
     # Get pending tasks and reminders
@@ -428,8 +437,7 @@ def heartbeat_node(
         summary_parts.append(f"Reminders: {len(reminders)}")
 
     from langchain_core.messages import HumanMessage, SystemMessage
-from agent.utils import stream_text
-    llm = _get_llm(model, base_url)
+    llm = _get_llm(model, base_url, llm_config=llm_config or {})
     prompt = f"Sir has the following: {'; '.join(summary_parts)}. Provide a brief, witty one-sentence summary to speak aloud. Stay in character as JARVIS."
     try:
         response = llm.invoke([SystemMessage(content="You are JARVIS. Brief, dry wit. Address user as Sir."), HumanMessage(content=prompt)])

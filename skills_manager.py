@@ -57,11 +57,19 @@ def _web_search(query: str, max_results: int = 5) -> str:
         return f"Search error: {e}"
 
 
-def _invoke_tool_llm(prompt: str, model: str = "qwen3:4b", base_url: str = "http://localhost:11434") -> str:
-    """Use Qwen3 for structured output (tool code generation)."""
+def _invoke_tool_llm(prompt: str, model: str = "qwen3:4b", base_url: str = "http://localhost:11434", config: Optional[dict] = None) -> str:
+    """Use LLM for structured output (tool code generation). Supports Ollama and OpenRouter."""
     try:
-        from langchain_ollama import ChatOllama
-        llm = ChatOllama(model=model, base_url=base_url, temperature=0.3)
+        from agent.llm_factory import get_llm_from_config
+
+        llm_cfg = (config or {}).get("llm", {})
+        if llm_cfg.get("provider") == "openrouter":
+            llm = get_llm_from_config(llm_cfg, temperature=0.3)
+        else:
+            llm = get_llm_from_config(
+                {"model": model, "host": base_url, "provider": "ollama"},
+                temperature=0.3,
+            )
         response = llm.invoke(prompt)
         return response.content if hasattr(response, "content") else str(response)
     except Exception as e:
@@ -107,7 +115,7 @@ Name the file with underscores, e.g. spotify_control.py
 
 Output ONLY the Python code, no markdown or explanation."""
 
-    code = _invoke_tool_llm(prompt, model=tool_model, base_url=base_url)
+    code = _invoke_tool_llm(prompt, model=tool_model, base_url=base_url, config=config)
 
     # Strip markdown if present
     if "```python" in code:

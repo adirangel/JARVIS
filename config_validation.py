@@ -2,7 +2,9 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 
 class LLMConfig(BaseModel):
+    provider: str = "ollama"  # "ollama" | "openrouter"
     model: str = "qwen3:4b"
+    api_key: Optional[str] = None  # OpenRouter API key, or use OPENROUTER_API_KEY env
     host: str = "http://localhost:11434"
     temperature: float = 0.7
     max_tokens: int = 256
@@ -53,8 +55,8 @@ class VoiceConfig(BaseModel):
 
 class WakeWordConfig(BaseModel):
     models: List[str] = ["hey_jarvis_v0.1"]
-    threshold: float = 0.75
-    wake_confidence: float = 0.78
+    threshold: float = 0.0015
+    wake_confidence: float = 0.0015
     device: Optional[str] = None
     cooldown_seconds: int = 3
     noise_gate_rms: float = 0.005

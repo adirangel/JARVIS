@@ -7,6 +7,13 @@ Single model: qwen3:4b for ALL tasks (conversation, planning, reflection, tools,
 from __future__ import annotations
 
 import sys
+
+# Load .env so OPENROUTER_API_KEY etc. are available
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 import threading
 import time
 from pathlib import Path
@@ -111,15 +118,34 @@ def _play_ready_beep(volume: float = 0.08, seconds: float = 0.08, frequency_hz: 
         pass
 
 
+def _strip_think_for_tts(text: str) -> str:
+    """Remove <think>...</think> blocks so only the final answer is spoken (thinking stays on screen only).
+    Streaming-safe: if <think> is open but </think> hasn't arrived yet, return empty to avoid speaking thoughts."""
+    import re
+    if not text or not text.strip():
+        return text
+    # Unclosed think block: last <think> is after last </think> (or </think> not yet arrived)
+    last_think = text.rfind("<think>")
+    last_end = text.rfind("</think>")
+    if last_think >= 0 and (last_end < 0 or last_think > last_end):
+        return ""  # Still inside think block during streaming
+    # Remove all complete <think>...</think> blocks
+    stripped = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    return stripped.strip()
+
+
 def _make_streaming_tts_callback(tts, play_audio_file, verbose: bool):
-    """Stream callback: queue sentence-complete chunks for TTS playback."""
+    """Stream callback: queue sentence-complete chunks for TTS playback.
+    Filters out <think>...</think> content - only the final answer is spoken, thinking stays on screen."""
     import queue
     import re
 
     buffer = []
+    tts_sent_end = 0  # How much of speakable content we've already queued for TTS
     text_queue = queue.Queue()
     _stop_sentinel = object()
     sentence_boundary = re.compile(r"[.!?\u2026;:\u05C3]\s*$")
+    sentence_split = re.compile(r"(?<=[.!?\u2026;:\u05C3])\s+")
 
     def _consumer() -> None:
         while True:
@@ -138,14 +164,21 @@ def _make_streaming_tts_callback(tts, play_audio_file, verbose: bool):
                 continue
 
     def on_chunk(chunk: str) -> None:
+        nonlocal tts_sent_end
         buffer.append(chunk)
-        s = "".join(buffer)
-        # Buffer until sentence punctuation to avoid truncation in playback.
-        if sentence_boundary.search(s.rstrip()):
-            phrase = "".join(buffer).strip()
-            if phrase:
-                text_queue.put(phrase)
-            buffer.clear()
+        full = "".join(buffer)
+        speakable = _strip_think_for_tts(full)
+        if not speakable or len(speakable) <= tts_sent_end:
+            return
+        new_part = speakable[tts_sent_end:]
+        if not sentence_boundary.search(new_part.rstrip()):
+            return
+        sentences = sentence_split.split(new_part)
+        for sent in sentences:
+            s = sent.strip()
+            if s and sentence_boundary.search(s.rstrip()):
+                text_queue.put(s)
+        tts_sent_end = len(speakable)
 
     def flush() -> str:
         remainder = "".join(buffer).strip()
@@ -156,8 +189,10 @@ def _make_streaming_tts_callback(tts, play_audio_file, verbose: bool):
         if text and text.strip():
             from agent.graph import _ensure_complete_sentence
 
-            text = _ensure_complete_sentence(text.strip())
-            text_queue.put(text)
+            speakable = _strip_think_for_tts(text)
+            if speakable:
+                text = _ensure_complete_sentence(speakable.strip())
+                text_queue.put(text)
 
     def start_consumer() -> threading.Thread:
         t = threading.Thread(target=_consumer, daemon=True)
@@ -253,15 +288,12 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
 
     def _llm_invoke(prompt: str) -> str:
         try:
-            from langchain_ollama import ChatOllama
             from langchain_core.messages import HumanMessage, SystemMessage
 
+            from agent.llm_factory import get_llm_from_config
+
             llm_cfg = config.get("llm", {})
-            model = llm_cfg.get("model") or llm_cfg.get("conversation_model") or llm_cfg.get("tool_model", "qwen3:4b")
-            base_url = llm_cfg.get("host", "http://localhost:11434")
-            if base_url and not base_url.startswith("http"):
-                base_url = f"http://{base_url}"
-            llm = ChatOllama(model=model, base_url=base_url, temperature=0.7)
+            llm = get_llm_from_config(llm_cfg, temperature=0.7)
             resp = llm.invoke(
                 [
                     SystemMessage(content="You are JARVIS. Brief, dry wit. Address user as Sir."),
@@ -452,7 +484,9 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                 memory=memory,
             )
             t_tts_start = time.perf_counter()
-            _speak(response)
+            to_speak = _strip_think_for_tts(response)
+            if to_speak:
+                _speak(to_speak)
             if show_timing:
                 tts_ms = (time.perf_counter() - t_tts_start) * 1000
                 from agent.timing_context import log_timing

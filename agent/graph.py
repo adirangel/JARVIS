@@ -48,10 +48,14 @@ def create_jarvis_graph(
 
     config = config or {}
     llm_cfg = config.get("llm", {})
+    provider = llm_cfg.get("provider", "ollama")
     model = llm_cfg.get("model") or llm_cfg.get("conversation_model") or llm_cfg.get("tool_model", "qwen3:4b")
-    base_url = llm_cfg.get("host", "http://localhost:11434").replace("http://", "").replace("https://", "")
-    if not base_url.startswith("http"):
-        base_url = f"http://{base_url}"
+    if provider == "openrouter":
+        base_url = "https://openrouter.ai/api/v1"
+    else:
+        base_url = llm_cfg.get("host", "http://localhost:11434").replace("http://", "").replace("https://", "")
+        if not base_url.startswith("http"):
+            base_url = f"http://{base_url}"
 
     tool_router = create_tool_router(config)
 
@@ -178,6 +182,15 @@ def create_jarvis_graph(
     return graph
 
 
+def _ensure_complete_sentence(text: str) -> str:
+    """Issue 3: If response ends without punctuation (likely cut), append witty note."""
+    if not text or not text.strip():
+        return text
+    if text.rstrip()[-1:] in ".!?\u2026;:\u05C3":
+        return text
+    return text.rstrip() + " Pardon the interruption, Sir."
+
+
 def _truncate_words(text: str, max_words: int | None = 0) -> str:
     """Optional word limiter. max_words<=0 disables truncation."""
     if not text or not text.strip():
@@ -192,19 +205,6 @@ def _truncate_words(text: str, max_words: int | None = 0) -> str:
     return _ensure_complete_sentence(truncated)
 
 
-def _ensure_complete_sentence(text: str) -> str:
-    """Issue 3: If response ends without punctuation (likely cut), append witty note."""
-    if not text or not text.strip():
-        return text
-    t = text.rstrip()
-    # Proper sentence endings
-    if any(t.endswith(p) for p in (".", "!", "?", "。", "…", "...")):
-        return text
-    # Ends mid-sentence - add note (avoids abrupt TTS cutoff)
-    return text + " Pardon the interruption, Sir."
-
-
-# Simple query patterns - fast path skips planner/tool routing for single LLM call
 _SIMPLE_PATTERNS = (
     "hi", "hello", "hey", "thanks", "thank you", "bye", "goodbye", "ok", "okay",
 )
@@ -272,10 +272,14 @@ def invoke_jarvis(
 
     cfg = config or {}
     llm_cfg = cfg.get("llm", {})
+    provider = llm_cfg.get("provider", "ollama")
     model = llm_cfg.get("model") or llm_cfg.get("conversation_model") or llm_cfg.get("tool_model", "qwen3:4b")
-    base_url = llm_cfg.get("host", "http://localhost:11434")
-    if base_url and not base_url.startswith("http"):
-        base_url = f"http://{base_url}"
+    if provider == "openrouter":
+        base_url = "https://openrouter.ai/api/v1"
+    else:
+        base_url = llm_cfg.get("host", "http://localhost:11434")
+        if base_url and not base_url.startswith("http"):
+            base_url = f"http://{base_url}"
 
     show_timing = cfg.get("timing", False) or cfg.get("debug", False)
     timings: list[str] = []
@@ -337,17 +341,20 @@ def invoke_jarvis(
     if use_fast_path and _is_simple_query(user_message):
         try:
             t_start = time.perf_counter()
-            from langchain_ollama import ChatOllama
             from langchain_core.messages import SystemMessage
+            from agent.llm_factory import get_llm
             from agent.personality import REFLECTOR_PROMPT
             mem_ctx = ""
             if memory and hasattr(memory, "build_context"):
                 mem_ctx = "\n\n" + memory.build_context(user_message) if memory.build_context(user_message) else ""
-            llm = ChatOllama(
+            llm = get_llm(
                 model=model,
                 base_url=base_url,
                 temperature=0.5,
-                model_kwargs={"num_predict": 128, "num_ctx": llm_cfg.get("num_ctx_reflector", 4096)},
+                num_predict=128,
+                num_ctx=llm_cfg.get("num_ctx_reflector", 4096),
+                provider=llm_cfg.get("provider", "ollama"),
+                api_key=llm_cfg.get("api_key"),
             )
             resp = llm.invoke([
                 SystemMessage(content=REFLECTOR_PROMPT + mem_ctx),

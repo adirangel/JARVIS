@@ -26,22 +26,44 @@ except ImportError:
 class MemoryManager:
     """Unified memory for JARVIS."""
 
-    def __init__(self, embed_fn=None, use_vector_store=True, vector_store=None):
+    def __init__(
+        self,
+        db_path: str = "data/jarvis.db",
+        chroma_path: str = "data/chroma",
+        embedding_model: str = "nomic-embed-text",
+        ollama_host: str = "http://localhost:11434",
+        max_memories: int = 5,
+        chroma_cache_recent: bool = True,
+        chroma_cache_size: int = 50,
+        use_vector_store: bool = True,
+        vector_store=None,
+        embed_fn=None,
+    ):
+        self._session_id = str(uuid.uuid4())
+        self._max_memories = max_memories
+        self._fact_patterns = []  # Optional: add patterns for fact extraction
+        self._sqlite = SQLiteStore(db_path)
+        self._logger = logging.getLogger(__name__)
         self.use_vector_store = use_vector_store and CHROMADB_AVAILABLE
         self._vector_store = None
-        self._sqlite = SQLiteStore()
-        self._logger = logging.getLogger(__name__)
         if self.use_vector_store:
             if vector_store:
                 self._vector_store = vector_store
             else:
                 try:
-                    self._vector_store = VectorStore()
+                    self._vector_store = VectorStore(
+                        chroma_path=chroma_path,
+                        embedding_model=embedding_model,
+                        ollama_host=ollama_host,
+                        cache_recent=chroma_cache_recent,
+                        max_cache_size=chroma_cache_size,
+                    )
                     self._logger.info("VectorStore initialized successfully")
                 except Exception as e:
                     self._logger.error(f"Failed to initialize VectorStore: {e}")
                     self._vector_store = None
                     self.use_vector_store = False
+
     def session_id(self) -> str:
         return self._session_id
 

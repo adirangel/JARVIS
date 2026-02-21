@@ -1,9 +1,12 @@
 # JARVIS Configuration - Copy to config.yaml and customize
 # =========================================================
 
-# Single model: qwen3:4b for ALL tasks (conversation, planning, reflection, tools, self-evolution)
+# LLM: Ollama (local) or OpenRouter (API)
+# For OpenRouter: provider: "openrouter", model: "stepfun/step-3.5-flash:free", api_key: "sk-or-..."
 llm:
+  provider: "ollama"
   model: "qwen3:4b"
+  api_key: ""
   host: "http://localhost:11434"
   temperature: 0.7
   max_tokens: 256
@@ -61,8 +64,8 @@ voice:
 # Wake word (openwakeword local inference)
 wake_word:
   models: ["hey_jarvis_v0.1"]
-  threshold: 0.75
-  wake_confidence: 0.78
+  threshold: 0.0015
+  wake_confidence: 0.0015  # Lower = more sensitive
   device: null
   cooldown_seconds: 3
   noise_gate_rms: 0.005

@@ -726,84 +726,21 @@ class ToolRouter:
                 kw.get("action", ""), kw.get("path", ""), kw.get("content", ""), allowed
             )
 
+        def _sys_cmd(**kw):
+            return system_cmd_execute(
+                kw.get("command", ""), kw.get("working_directory"), timeout
+            )
 
-def _validate_system_command(command: str, allowed_dirs: list) -> (bool, str):
-    """Block dangerous commands and enforce directory restrictions."""
-    import shlex, os
-    try:
-        parts = shlex.split(command)
-    except ValueError:
-        return False, "Invalid command syntax"
-    if not parts:
-        return False, "Empty command"
-    
-    ALLOWED_COMMANDS = {
-        'ls', 'dir', 'pwd', 'echo', 'cat', 'head', 'tail', 'grep', 'find', 'which', 'whereis',
-        'date', 'cal', 'whoami', 'id', 'uname', 'hostname', 'uptime', 'df', 'du', 'free',
-        'ps', 'top', 'htop', 'kill', 'pkill', 'pgrep', 'nice', 'renice', 'nohup',
-        'mkdir', 'rmdir', 'touch', 'cp', 'mv', 'rm', 'chmod', 'chown', 'ln', 'stat',
-        'tar', 'gzip', 'gunzip', 'zip', 'unzip', 'bzip2', 'xz',
-        'python', 'python3', 'node', 'npm', 'pip', 'pip3', 'git', 'curl', 'wget',
-        'ifconfig', 'ip', 'netstat', 'ss', 'ping', 'traceroute', 'dig', 'nslookup',
-        'awk', 'sed', 'sort', 'uniq', 'wc', 'tr', 'cut', 'paste', 'column',
-        'env', 'printenv', 'set', 'export', 'source', 'alias', 'history',
-        'true', 'false', 'yes', 'no', 'test', '[', ']',
-    }
-    base_cmd = parts[0].split('/')[-1]
-    if base_cmd not in ALLOWED_COMMANDS:
-        return False, f"Command '{base_cmd}' is not whitelisted"
-    dangerous = ['|', ';', '&', '$', '`', '>', '<', '
-']
-    if any(ch in command for ch in dangerous):
-        return False, "Dangerous metacharacters detected"
-    if allowed_dirs:
-        target_dir = cwd or os.getcwd()
-        allowed = any(os.path.abspath(target_dir).startswith(os.path.abspath(d)) for d in allowed_dirs)
-        if not allowed:
-            return False, f"Command not allowed in directory {target_dir}"
-    return True, ""
-
-    def _sys_cmd(command: str, cwd: str = None, capture_output: bool = True, **kwargs) -> dict:
-        """Execute system command with security validation."""
-        import subprocess as sp
-        cwd = cwd or (os.getcwd() if 'cwd' not in kwargs else kwargs.get('cwd'))
-        timeout = kwargs.get('timeout', 30)
-        
-        # Security: validate command
-        allowed_dirs = []
-        try:
-            if 'config' in globals():
-                allowed_dirs = globals()['config'].get('tools', {}).get('allowed_directories', ['~'])
-        except Exception:
-            allowed_dirs = ['~']
-        
-        safe, reason = _validate_system_command(command, allowed_dirs)
-        if not safe:
-            return {"error": f"Security error: {reason}"}
-        
-        try:
-            result = sp.run(command, shell=True, cwd=cwd, capture_output=capture_output, text=True, timeout=timeout)
-            return {
-                "stdout": result.stdout[:10000],
-                "stderr": result.stderr[:5000],
-                "returncode": result.returncode
-            }
-        except sp.TimeoutExpired:
-            return {"error": "Command timed out"}
-        except Exception as e:
-            return {"error": str(e)}
-
-        def _open_browser(**kw):
-            return open_browser_execute(kw.get("url", ""), kw.get("search_query", ""))
-        self.register("open_browser", _open_browser, OPEN_BROWSER_TOOL)
-
-        def _browser_send_message(**kw):
-            return browser_send_message_execute(
+        self.register("open_browser", lambda **kw: open_browser_execute(kw.get("url", ""), kw.get("search_query", "")), OPEN_BROWSER_TOOL)
+        self.register(
+            "browser_send_message",
+            lambda **kw: browser_send_message_execute(
                 url=kw.get("url", ""),
                 message=kw.get("message", ""),
                 site=kw.get("site", ""),
-            )
-        self.register("browser_send_message", _browser_send_message, BROWSER_SEND_MESSAGE_TOOL)
+            ),
+            BROWSER_SEND_MESSAGE_TOOL,
+        )
         self.register("web_search", lambda **kw: web_search_execute(kw.get("query", ""), kw.get("max_results", max_results)), WEB_SEARCH_TOOL)
         self.register(
             "get_current_time",
