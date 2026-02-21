@@ -20,20 +20,29 @@ except ImportError:
 
 
 class WakeWordDetector:
-    """Detect 'Hey Jarvis' via openwakeword."""
+    """Detect 'Hey Jarvis' via openwakeword.
+
+    Issue 1 fix: Higher confidence threshold (0.7-0.85) + noise gate to reduce
+    false positives from background noise.
+    """
 
     def __init__(
         self,
         model_names: Optional[list[str]] = None,
         threshold: float = 0.35,
         device: Optional[int] = None,
+        wake_confidence: Optional[float] = None,
+        noise_gate_rms: Optional[float] = None,
     ):
         if not OPENWAKEWORD_AVAILABLE:
             raise ImportError("openwakeword required. pip install openwakeword")
         self._model_names = model_names or ["hey_jarvis_v0.1"]
-        self._threshold = threshold
+        # Prefer wake_confidence (0.7-0.85) over legacy threshold for fewer false positives
+        self._threshold = wake_confidence if wake_confidence is not None else threshold
         self._device = device
         self._model = None
+        # Noise gate: skip prediction if chunk RMS below this (reduces false triggers)
+        self._noise_gate_rms = noise_gate_rms if noise_gate_rms is not None else 0.0
 
     def _ensure_model(self) -> None:
         if self._model is None:
@@ -45,6 +54,15 @@ class WakeWordDetector:
                 wakeword_models=self._model_names,
                 inference_framework="onnx",
             )
+
+    def _chunk_has_speech(self, audio_chunk: bytes) -> bool:
+        """Noise gate: return False if chunk is too quiet (likely background hiss)."""
+        if self._noise_gate_rms <= 0:
+            return True
+        import numpy as np
+        arr = np.frombuffer(audio_chunk, dtype=np.int16)
+        rms = np.sqrt(np.mean(arr.astype(np.float64) ** 2)) / 32768
+        return rms >= self._noise_gate_rms
 
     def predict(self, audio_chunk: bytes) -> dict:
         """Return prediction scores for each wake word."""
@@ -101,6 +119,9 @@ class WakeWordDetector:
             while True:
                 try:
                     chunk = chunk_queue.get(timeout=0.5)
+                    # Noise gate: skip prediction on very quiet chunks (reduces false positives)
+                    if not self._chunk_has_speech(chunk):
+                        continue
                     preds = self.predict(chunk)
                     for scores in preds.values():
                         s = float(scores) if not hasattr(scores, "__iter__") else (max(scores) if scores else 0)

@@ -76,6 +76,16 @@ def create_jarvis_graph(
         from agent.nodes import tool_executor_node
         return tool_executor_node(state, tool_router=tool_router)
 
+    # Time Handler: EAGER execution - bypass planner, ALWAYS call get_current_time for time queries
+    def make_time_handler(state: dict) -> dict:
+        from agent.nodes import time_handler_node
+        return time_handler_node(state, tool_router=tool_router)
+
+    # Time Validator (Critic): Verify output, re-call if suspicious
+    def make_time_validator(state: dict) -> dict:
+        from agent.nodes import time_validator_node
+        return time_validator_node(state, tool_router=tool_router)
+
     # Reflector: DictaLM - final response with Paul Bettany personality
     def make_reflector(state: dict) -> dict:
         from agent.nodes import reflector_node
@@ -105,24 +115,41 @@ def create_jarvis_graph(
 
     builder.add_node("listener", lambda s: s)  # Pass-through
     builder.add_node("fastpath", make_fastpath)
+    builder.add_node("time_handler", make_time_handler)
     builder.add_node("planner", make_planner)
     builder.add_node("tool_executor", make_tool_exec)
+    builder.add_node("time_validator", make_time_validator)
     builder.add_node("reflector", make_reflector)
 
     builder.set_entry_point("listener")
 
     def route_from_listener(state: dict) -> str:
-        """FastPath: simple commands skip planner. Complex -> planner."""
+        """Time queries -> time_handler (ALWAYS use tool). Simple -> fastpath. Else -> planner."""
         messages = state.get("messages", [])
         if not messages:
             return "planner"
         last = messages[-1] if messages else None
         text = (last.content if hasattr(last, "content") else str(last)) if last else ""
+        if _is_time_query(text):
+            return "time_handler"  # Bypass planner - NEVER let model guess time
+        # Follow-up correction ("that's wrong, check the web") - if previous user msg was time query, re-fetch
+        t_lower = text.strip().lower()
+        if any(p in t_lower for p in _CORRECTION_PATTERNS):
+            from langchain_core.messages import HumanMessage
+            for m in reversed(messages[:-1]):
+                if isinstance(m, HumanMessage):
+                    prev = m.content if isinstance(m.content, str) else str(m.content or "")
+                    if _is_time_query(prev):
+                        return "time_handler"  # Re-run with location from previous message
+                    break  # Only check immediate previous user message
         if _is_simple_query(text):
             return "fastpath"
         return "planner"
 
-    builder.add_conditional_edges("listener", route_from_listener, {"fastpath": "fastpath", "planner": "planner"})
+    builder.add_conditional_edges(
+        "listener", route_from_listener,
+        {"fastpath": "fastpath", "time_handler": "time_handler", "planner": "planner"},
+    )
     builder.add_edge("fastpath", END)
 
     def route_after_planner(state: dict) -> str:
@@ -132,8 +159,17 @@ def create_jarvis_graph(
             return "tool_executor"
         return "reflector"
 
+    def _route_after_tools(state: dict) -> str:
+        """If we had get_current_time in results, validate; else go to reflector."""
+        results = state.get("tool_results", [])
+        if any(r.get("tool") == "get_current_time" for r in results):
+            return "time_validator"
+        return "reflector"
+
+    builder.add_edge("time_handler", "time_validator")  # Always validate after eager time call
+    builder.add_edge("time_validator", "reflector")
     builder.add_conditional_edges("planner", route_after_planner, {"tool_executor": "tool_executor", "reflector": "reflector"})
-    builder.add_edge("tool_executor", "reflector")
+    builder.add_conditional_edges("tool_executor", _route_after_tools, {"time_validator": "time_validator", "reflector": "reflector"})
     builder.add_edge("reflector", END)
 
     # Checkpointer - SqliteSaver for state persistence
@@ -148,11 +184,27 @@ def create_jarvis_graph(
 
 
 def _truncate_words(text: str, max_words: int = 50) -> str:
-    """Limit response to max_words. Adds ... if truncated."""
+    """Limit response to max_words. Adds ... if truncated. Never cut mid-sentence."""
+    if not text or not text.strip():
+        return text
     words = text.split()
     if len(words) <= max_words:
+        return _ensure_complete_sentence(text)
+    # Truncate at word boundary, add ellipsis
+    truncated = " ".join(words[:max_words]) + "..."
+    return _ensure_complete_sentence(truncated)
+
+
+def _ensure_complete_sentence(text: str) -> str:
+    """Issue 3: If response ends without punctuation (likely cut), append witty note."""
+    if not text or not text.strip():
         return text
-    return " ".join(words[:max_words]) + "..."
+    t = text.rstrip()
+    # Proper sentence endings
+    if any(t.endswith(p) for p in (".", "!", "?", "。", "…", "...")):
+        return text
+    # Ends mid-sentence - add note (avoids abrupt TTS cutoff)
+    return text + " Pardon the interruption, Sir."
 
 
 # Simple query patterns - fast path skips planner/tool routing for single LLM call
@@ -161,9 +213,33 @@ _SIMPLE_PATTERNS = (
     "שלום", "היי", "תודה", "בבקשה", "מה נשמע", "מה קורה", "להתראות", "יאללה",
 )
 
+# Time query patterns - ALWAYS use get_current_time tool, NEVER let model guess
+_TIME_PATTERNS = (
+    "what time", "current time", "time in ", "time now", "what's the time",
+    "time right now", "the time", "now in ", "hora en", "quelle heure",
+    "מה השעה", "שעה ב", "השעה ב", "עכשיו ב", "מה השעה ב",
+)
+
+# Correction patterns - user says previous answer was wrong
+_CORRECTION_PATTERNS = ("wrong", "incorrect", "check again", "search the web", "look it up", "double-check", "that's not right")
+
+
+def _is_time_query(text: str) -> bool:
+    """Detect time queries - MUST use get_current_time, never fastpath or planner guess."""
+    import re
+    t = text.strip().lower()
+    if any(p in t for p in _TIME_PATTERNS):
+        return True
+    # Single-word "time" at end only - "now" alone is ambiguous ("can you hear me now?" is NOT a time query)
+    if re.search(r"\btime\s*\?*\s*$", t) and len(t) < 30:
+        return True
+    return False
+
 
 def _is_simple_query(text: str) -> bool:
-    """Detect greetings/short acknowledgments for fast path."""
+    """Detect greetings/short acknowledgments for fast path. Time queries go to planner."""
+    if _is_time_query(text):
+        return False
     t = text.strip().lower()
     if len(t) > 40:
         return False
@@ -196,6 +272,52 @@ def invoke_jarvis(
 
     def _on_timing(name: str, elapsed_ms: float) -> None:
         timings.append(f"{name}: {elapsed_ms:.0f}ms")
+
+    # HARD BYPASS: Time queries - ALWAYS use tool, never let graph/LLM guess
+    def _do_time_bypass(msg: str) -> Optional[tuple[str, float]]:
+        from agent.tools import create_tool_router, extract_location_for_time_query
+        from agent.tools import _BAD_LOCATION_WORDS
+        loc = extract_location_for_time_query(msg)
+        if not loc and memory and hasattr(memory, "get_recent_messages"):
+            for m in (memory.get_recent_messages(limit=20) or []):
+                prev_user = m.get("content") or m.get("user_message") or m.get("user") or ""
+                if m.get("role") in ("human", "user") and prev_user and _is_time_query(prev_user):
+                    loc = extract_location_for_time_query(prev_user)
+                    if loc and not (set(loc.lower().split()) & _BAD_LOCATION_WORDS):
+                        break
+        loc = (loc or "Be'er Sheva").strip()
+        try:
+            router = create_tool_router(cfg)
+            time_result = router.execute("get_current_time", location=loc)
+            return f"The current time in {loc} is {time_result}, Sir."
+        except Exception:
+            return None
+
+    if _is_time_query(user_message):
+        t_start = time.perf_counter()
+        result = _do_time_bypass(user_message)
+        if result:
+            response = result
+            latency = time.perf_counter() - t_start
+            if show_timing:
+                print(f"[Timing] TimeBypass: {latency * 1000:.0f}ms", flush=True)
+            if stream_callback:
+                stream_callback(response)
+            return _truncate_words(response, max_words), latency
+        # Fall through to graph on error
+    elif any(p in user_message.strip().lower() for p in _CORRECTION_PATTERNS) and memory:
+        # "That's wrong, check the web" - try time bypass with location from last exchange
+        t_start = time.perf_counter()
+        result = _do_time_bypass(user_message)
+        if result:
+            response = result
+            response = "My apologies, Sir. - " + response
+            latency = time.perf_counter() - t_start
+            if show_timing:
+                print(f"[Timing] TimeBypass(correction): {latency * 1000:.0f}ms", flush=True)
+            if stream_callback:
+                stream_callback(response)
+            return _truncate_words(response, max_words), latency
 
     # Fast path: single LLM call for simple greetings (bypasses graph - fastest)
     if use_fast_path and _is_simple_query(user_message):

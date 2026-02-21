@@ -1,0 +1,53 @@
+"""Tests for voice validation (false positive reduction)."""
+
+import pytest
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+
+def test_valid_transcript_accepted():
+    from voice.validation import is_valid_transcript
+    valid, _ = is_valid_transcript("What is the time in Tokyo?")
+    assert valid is True
+    valid, _ = is_valid_transcript("Thank you so much for your help")
+    assert valid is True
+
+
+def test_empty_rejected():
+    from voice.validation import is_valid_transcript
+    valid, reason = is_valid_transcript("")
+    assert valid is False
+    assert reason == "empty"
+    valid, reason = is_valid_transcript("   ")
+    assert valid is False
+    assert reason == "empty"
+
+
+def test_too_short_rejected():
+    from voice.validation import is_valid_transcript
+    valid, reason = is_valid_transcript("hi", min_words=3)
+    assert valid is False
+    assert reason == "too_short"
+    valid, reason = is_valid_transcript("thank you", min_words=3)
+    assert valid is False
+    assert reason == "too_short"
+
+
+def test_noise_artifact_rejected():
+    from voice.validation import is_valid_transcript
+    valid, reason = is_valid_transcript("thank you", min_words=2)
+    assert valid is False
+    assert reason == "noise_artifact"
+    valid, reason = is_valid_transcript("noise", min_words=1)
+    assert valid is False
+    assert reason == "noise_artifact"
+
+
+def test_ensure_complete_sentence():
+    from agent.graph import _ensure_complete_sentence
+    assert _ensure_complete_sentence("Hello, Sir.") == "Hello, Sir."
+    assert _ensure_complete_sentence("As you wish") == "As you wish Pardon the interruption, Sir."
+    assert _ensure_complete_sentence("") == ""

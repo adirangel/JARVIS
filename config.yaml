@@ -44,14 +44,23 @@ voice:
   recorder_silence_threshold: 0.012 # RMS below this = silence (slightly higher helps with non-native speaker pauses)
   push_to_talk_seconds: 5   # Fixed recording length for push-to-talk
   follow_up_seconds: 8     # After response, record this long for follow-up (no "Hey Jarvis" needed)
+  # False positive reduction (Issue 1)
+  min_audio_length: 1.0    # Ignore recordings shorter than this (seconds) - filters noise bursts
+  min_transcript_words: 3  # Discard transcriptions with fewer words (likely noise artifacts)
+  use_vad: true            # Voice activity detection in STT - filters silence/background
+  # Continuous conversation (Issue 2)
+  silence_timeout: 15      # Seconds of silence to end active conversation (10-20 typical)
+  listening_prompt: "Listening, Sir."  # Spoken after response to indicate ready for follow-up
 
 # Wake words (openwakeword - 100% local)
 # "Hey Jarvis" (English) + "היי ג'ארוויס" (Hebrew - requires custom training)
 wake_word:
   models: ["hey_jarvis_v0.1"]
-  threshold: 0.15  # Lower = more sensitive. 0.15-0.35 typical. 0.0021 too low (model scores 0-1)
+  threshold: 0.15  # Legacy alias - use wake_confidence if set
+  wake_confidence: 0.15  # 0.7-0.85 reduces false positives from background noise (higher = stricter)
   device: null     # Set to mic ID from: python -c "import sounddevice; print(sounddevice.query_devices())"
   cooldown_seconds: 3  # Ignore rapid re-triggers after wake
+  noise_gate_rms: 0.005  # Skip wake detection if chunk RMS below this (reduces false triggers)
 
 # Memory (Chroma queries target <100ms)
 memory:
@@ -61,12 +70,19 @@ memory:
   max_memories: 3  # Fewer = faster queries
   chroma_cache_recent: true  # Cache recent facts for <100ms
 
+# DDGS web search - use fixed Chrome (not random) for consistent browser-like requests
+ddgs:
+  impersonate: "chrome_145"   # Chrome 145 - primp 1.0.0 supported, avoids "using random" warning
+  impersonate_os: "windows"   # Match your OS for realistic fingerprint
+
 # Tools
 tools:
   allowed_directories:
     - "~"
   max_search_results: 5
   command_timeout: 30
+  # Time verification: "chrome" = use your Chrome via time.is (most reliable), "api" = time.now API only
+  time_verify: "chrome"
 
 # Heartbeat
 heartbeat:

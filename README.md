@@ -69,7 +69,7 @@ Edit `config.yaml` to set:
 
 ### Voice mode (wake word)
 
-Say **"Hey Jarvis"** then speak. JARVIS listens until you stop talking.
+Say **"Hey Jarvis"** then speak. After the first wake, JARVIS listens continuously (no need to repeat "Hey Jarvis") until you're silent for ~15 seconds or say "goodbye"/"stop".
 
 ```powershell
 python main.py --mode voice
@@ -133,6 +133,31 @@ For GPU-accelerated speech-to-text, install [CUDA 12](https://developer.nvidia.c
 - **Debug timing**: Set `timing: true` in config for per-node latency
 
 See [docs/OLLAMA_LATENCY.md](docs/OLLAMA_LATENCY.md) for Ollama flags (`--flash-attn`, `num_ctx`).
+
+---
+
+## Troubleshooting
+
+### False positives (JARVIS responds to background noise)
+
+If JARVIS triggers on silence or invents words like "thank you" when no one is speaking:
+
+1. **Increase wake confidence** – In `config.yaml`, set `wake_word.wake_confidence` to `0.8` or `0.85` (higher = stricter).
+2. **Noise gate** – Ensure `wake_word.noise_gate_rms` is set (e.g. `0.005`) to skip very quiet chunks.
+3. **Min audio length** – Set `voice.min_audio_length` to `1.5` to ignore short noise bursts.
+4. **VAD** – Keep `voice.use_vad: true` so STT filters silence/background.
+5. **Debug** – Run with `--mode voice` or set `debug: true` to see rejected transcriptions in the log.
+
+### Responses cut off mid-sentence
+
+- JARVIS appends "Pardon the interruption, Sir." when the response is truncated.
+- Increase `llm.max_tokens` in config if responses are often cut short.
+- Streaming TTS buffers until sentence boundaries; check `voice.stream_tts: true`.
+
+### Conversation ends too quickly
+
+- Increase `voice.silence_timeout` (default 15s) to wait longer before ending the session.
+- Say "goodbye" or "stop" to end explicitly.
 
 ---
 

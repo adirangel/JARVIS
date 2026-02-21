@@ -30,10 +30,17 @@ def load_config() -> dict:
     cfg = ROOT / "config.yaml"
     example = ROOT / "config.example.yaml"
     path = cfg if cfg.exists() else example
+    config = {}
     if path.exists():
         with open(path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
-    return {}
+            config = yaml.safe_load(f) or {}
+    # Patch ddgs to use fixed Chrome (not random) - avoids "Impersonate 'chrome_127' does not exist"
+    try:
+        from agent.ddgs_patch import apply_ddgs_patch
+        apply_ddgs_patch(config)
+    except Exception:
+        pass
+    return config
 
 
 def create_memory(config: dict) -> "MemoryManager":
@@ -110,8 +117,11 @@ def _make_streaming_tts_callback(tts, verbose: bool):
     def on_chunk(chunk: str) -> None:
         buffer.append(chunk)
         s = "".join(buffer)
-        # Play on sentence end or after ~25 chars (first phrase like "As you wish, Sir.")
-        if any(s.rstrip().endswith(p) for p in (".", "!", "?", "。", "!")) or len(s) >= 25:
+        # Issue 3: Buffer until full sentence to avoid TTS cutoff. Play on sentence end (preferred)
+        # or after ~80 chars for long run-ons (avoids cutting "10:58 AM (IST, UTC+2)" mid-time)
+        sentence_end = any(s.rstrip().endswith(p) for p in (".", "!", "?", "。", "…", ";"))
+        min_chars = 80  # Long enough for time strings; short enough to avoid latency
+        if sentence_end or len(s) >= min_chars:
             phrase = "".join(buffer).strip()
             if phrase:
                 text_queue.put(phrase)
@@ -124,7 +134,10 @@ def _make_streaming_tts_callback(tts, verbose: bool):
 
     def put_remainder(text: str) -> None:
         if text and text.strip():
-            text_queue.put(text.strip())
+            # Issue 3: Ensure remainder ends properly (avoids abrupt TTS cutoff)
+            from agent.graph import _ensure_complete_sentence
+            text = _ensure_complete_sentence(text.strip())
+            text_queue.put(text)
 
     def start_consumer() -> threading.Thread:
         t = threading.Thread(target=_consumer, daemon=True)
@@ -207,8 +220,10 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
 
     wake_cfg = config.get("wake_word", {})
     models = wake_cfg.get("models", ["hey_jarvis_v0.1"])
-    threshold = wake_cfg.get("threshold", 0.35)
+    # Issue 1: Use wake_confidence (0.7-0.85) to reduce false positives; fallback to threshold
+    threshold = wake_cfg.get("wake_confidence") or wake_cfg.get("threshold", 0.35)
     mic_device = wake_cfg.get("device")
+    noise_gate_rms = wake_cfg.get("noise_gate_rms", 0.005)
 
     vc = config.get("voice", {})
     recorder = Recorder(
@@ -220,7 +235,13 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
 
     try:
         from voice.wake import WakeWordDetector
-        wake = WakeWordDetector(model_names=models, threshold=threshold, device=mic_device)
+        wake = WakeWordDetector(
+            model_names=models,
+            threshold=threshold,
+            device=mic_device,
+            wake_confidence=wake_cfg.get("wake_confidence"),
+            noise_gate_rms=noise_gate_rms,
+        )
     except ImportError:
         wake = None
 
@@ -256,6 +277,14 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                     if verbose:
                         print(f"[Wake] Too quiet (RMS={rms:.4f}), waiting for speech...", flush=True)
                     return
+                # Issue 1: Min audio length - ignore very short recordings (noise bursts)
+                sample_rate = vc.get("recorder_sample_rate", 16000)
+                audio_duration = len(audio) / (sample_rate * 2)
+                min_audio_len = vc.get("min_audio_length", 1.0)
+                if audio_duration < min_audio_len:
+                    if verbose:
+                        print(f"[Wake] Audio too short ({audio_duration:.1f}s < {min_audio_len}s), likely noise.", flush=True)
+                    return
                 import tempfile
                 import wave
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -264,7 +293,16 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                         wav.setsampwidth(2)
                         wav.setframerate(16000)
                         wav.writeframes(audio)
-                    text = stt.transcribe(f.name)
+                    use_vad = vc.get("use_vad", True)
+                    text = stt.transcribe(f.name, vad_filter=use_vad)
+                # Issue 1: Post-STT validation - discard noise artifacts ("thank you", etc.)
+                from voice.validation import is_valid_transcript
+                min_words = vc.get("min_transcript_words", 3)
+                valid, reason = is_valid_transcript(text, min_words=min_words, log_rejections=verbose)
+                if not valid:
+                    if verbose:
+                        print(f"[Wake] Rejected transcript (false positive: {reason}): {text[:60]!r}", flush=True)
+                    return
                 if not text.strip():
                     if verbose:
                         print("[Wake] No speech transcribed.", flush=True)
@@ -309,30 +347,66 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                 if verbose:
                     _t.sleep(0.5)  # Let audio device settle before next listen
                     print("[Wake] Listening again...", flush=True)
-                # Continuous follow-up: keep recording until user is silent
-                follow_up_sec = config.get("voice", {}).get("follow_up_seconds", 8)
-                while follow_up_sec > 0 and not stop_event.is_set():
+                # Issue 2: Play "Listening, Sir." to indicate ready for follow-up (no wake word needed)
+                listening_prompt = vc.get("listening_prompt", "Listening, Sir.")
+                if listening_prompt:
+                    try:
+                        wav_listen = tts.synthesize(listening_prompt)
+                        import sounddevice as sd
+                        import soundfile as sf
+                        data_listen, sr_listen = sf.read(wav_listen)
+                        sd.play(data_listen, sr_listen)
+                        sd.wait()
+                    except Exception:
+                        pass
+                # Issue 2: Continuous conversation - listen until silence_timeout or explicit end
+                silence_timeout = vc.get("silence_timeout") or vc.get("follow_up_seconds", 15)
+                _END_COMMANDS = ("goodbye", "good bye", "end", "stop", "that's all", "להתראות", "סיום")
+                t_followup_start = _t.monotonic()
+                while silence_timeout > 0 and not stop_event.is_set():
                     if verbose:
-                        print("[Wake] Follow-up - speak or stay silent to end...", flush=True)
-                    audio2 = recorder.record_until_silence(max_seconds=follow_up_sec)
+                        elapsed = _t.monotonic() - t_followup_start
+                        print(f"[Wake] Follow-up - speak or stay silent to end... [{elapsed:.1f}s]", flush=True)
+                    t_record_start = _t.monotonic()
+                    audio2 = recorder.record_until_silence(max_seconds=silence_timeout)
                     if not audio2:
                         break
                     arr2 = np.frombuffer(audio2, dtype=np.int16)
                     rms2 = np.sqrt(np.mean(arr2.astype(np.float64) ** 2)) / 32768
                     if rms2 <= min_rms:
                         if verbose:
-                            print("[Wake] Silence - ending conversation.", flush=True)
+                            elapsed = _t.monotonic() - t_record_start
+                            print(f"[Wake] Silence - ending conversation. [{elapsed:.1f}s]", flush=True)
                         break
+                    # Issue 1: Min audio length for follow-up too
+                    audio2_duration = len(audio2) / (sample_rate * 2)
+                    if audio2_duration < min_audio_len:
+                        if verbose:
+                            print(f"[Wake] Follow-up too short ({audio2_duration:.1f}s), skipping.", flush=True)
+                        continue
                     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f2:
                         with wave.open(f2.name, "wb") as wav2:
                             wav2.setnchannels(1)
                             wav2.setsampwidth(2)
                             wav2.setframerate(16000)
                             wav2.writeframes(audio2)
-                        text2 = stt.transcribe(f2.name)
+                        text2 = stt.transcribe(f2.name, vad_filter=use_vad)
                     if not text2.strip():
                         if verbose:
-                            print("[Wake] No speech - ending conversation.", flush=True)
+                            elapsed = _t.monotonic() - t_record_start
+                            print(f"[Wake] No speech - ending conversation. [{elapsed:.1f}s]", flush=True)
+                        break
+                    # Issue 2: Validate follow-up transcript (avoid false positives)
+                    valid2, _ = is_valid_transcript(text2, min_words=min_words, log_rejections=verbose)
+                    if not valid2:
+                        if verbose:
+                            print(f"[Wake] Rejected follow-up (false positive), continuing to listen...", flush=True)
+                        continue
+                    # Issue 2: Explicit end commands - exit conversation mode
+                    t2_lower = text2.strip().lower()
+                    if any(cmd in t2_lower for cmd in _END_COMMANDS):
+                        if verbose:
+                            print("[Wake] User said goodbye - ending conversation.", flush=True)
                         break
                     if verbose:
                         print(f"[Wake] You said: {_display_text(text2)}", flush=True)
@@ -355,6 +429,17 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                     if verbose:
                         _t.sleep(0.5)
                         print("[Wake] Listening again...", flush=True)
+                    # Issue 2: Play listening prompt after each response in continuous mode
+                    if listening_prompt:
+                        try:
+                            wav2 = tts.synthesize(listening_prompt)
+                            import sounddevice as sd
+                            import soundfile as sf
+                            d2, sr2 = sf.read(wav2)
+                            sd.play(d2, sr2)
+                            sd.wait()
+                        except Exception:
+                            pass
             except Exception as e:
                 print(f"[Wake] Error: {e}", flush=True)
             finally:

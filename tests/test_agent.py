@@ -40,6 +40,15 @@ def test_graph_creation():
         pytest.skip(f"Graph creation failed (Ollama may not be running): {e}")
 
 
+def test_time_query_no_false_positives():
+    """'Can you hear me now?' must NOT trigger time query (was routing to get_current_time)."""
+    from agent.graph import _is_time_query
+    assert _is_time_query("Can you hear me now?") is False
+    assert _is_time_query("Are you there now?") is False
+    assert _is_time_query("what time is it?") is True
+    assert _is_time_query("time") is True
+
+
 def test_simple_query_detection():
     from agent.graph import _is_simple_query
     assert _is_simple_query("hi") is True
@@ -48,6 +57,33 @@ def test_simple_query_detection():
     assert _is_simple_query("מה נשמע") is True
     assert _is_simple_query("What is the capital of France?") is False
     assert _is_simple_query("Search for Python tutorials online") is False
+    # Time queries must go to planner (get_current_time tool), never fastpath
+    assert _is_simple_query("What is the time right now in Be'er Sheva?") is False
+    assert _is_simple_query("current time in Tokyo") is False
+    assert _is_simple_query("מה השעה בירושלים") is False
+
+
+def test_time_validator():
+    """Time validator accepts valid output, rejects invalid."""
+    from agent.nodes import _is_valid_time_output, time_validator_node
+    from agent.tools import create_tool_router
+
+    assert _is_valid_time_output("10:58 AM (IST, UTC+2)") is True
+    assert _is_valid_time_output("03:45 PM (JST, UTC+9)") is True
+    assert _is_valid_time_output("12:00 PM (from web)") is True
+    assert _is_valid_time_output("58 AM (UTC+2)") is False  # Truncated - no HH:
+    assert _is_valid_time_output("") is False
+    assert _is_valid_time_output("some text") is False
+
+    # Validator passes through valid results
+    router = create_tool_router()
+    state = {
+        "tool_results": [{"tool": "get_current_time", "result": "10:58 AM (IST, UTC+2)", "args": {"location": "Be'er Sheva"}}],
+        "messages": [object(), object(), object()],  # user, ai, tool_msg
+        "tool_calls": [{"id": "call_0"}],
+    }
+    out = time_validator_node(state, router)
+    assert out["tool_results"][0]["result"] == "10:58 AM (IST, UTC+2)"
 
 
 def test_has_fastpath_node():
@@ -60,5 +96,7 @@ def test_has_fastpath_node():
         nodes = getattr(graph, "nodes", None) or {}
         node_names = list(nodes.keys()) if isinstance(nodes, dict) else []
         assert "fastpath" in node_names, f"Expected fastpath in {node_names}"
+        assert "time_validator" in node_names, f"Expected time_validator in {node_names}"
+        assert "time_handler" in node_names, f"Expected time_handler in {node_names}"
     except Exception as e:
         pytest.skip(f"Graph creation failed (Ollama may not be running): {e}")

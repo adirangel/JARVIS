@@ -37,13 +37,20 @@ voice:
   recorder_silence_threshold: 0.012
   push_to_talk_seconds: 5
   follow_up_seconds: 8
+  min_audio_length: 1.0   # Ignore recordings < 1s (noise bursts)
+  min_transcript_words: 3  # Discard very short transcriptions
+  use_vad: true            # VAD in STT filters silence/background
+  silence_timeout: 15      # Seconds of silence to end conversation
+  listening_prompt: "Listening, Sir."  # Spoken after response
 
-# Wake word
+# Wake word (Issue 1: higher confidence = fewer false positives)
 wake_word:
   models: ["hey_jarvis_v0.1"]
-  threshold: 0.15
+  threshold: 0.15  # Legacy - use wake_confidence
+  wake_confidence: 0.75  # 0.7-0.85 reduces false positives from background noise
   device: null  # Set to mic ID from: python -c "import sounddevice; print(sounddevice.query_devices())"
   cooldown_seconds: 3
+  noise_gate_rms: 0.005  # Skip detection on very quiet chunks
 
 # Memory (Chroma cache for <100ms queries)
 memory:
@@ -53,12 +60,19 @@ memory:
   max_memories: 3
   chroma_cache_recent: true
 
+# DDGS web search - use fixed Chrome instead of random (avoids "Impersonate does not exist" warning)
+ddgs:
+  impersonate: "chrome_145"
+  impersonate_os: "windows"
+
 # Tools
 tools:
   allowed_directories:
     - "~"
   max_search_results: 5
   command_timeout: 30
+  # time_verify: "chrome" = use your Chrome via time.is (most reliable), "api" = time.now API only
+  time_verify: "chrome"
 
 # Heartbeat
 heartbeat:

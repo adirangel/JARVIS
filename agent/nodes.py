@@ -206,6 +206,38 @@ def planner_node(
         }
 
 
+def time_handler_node(state: dict, tool_router: Any) -> dict:
+    """EAGER time execution: bypass planner, ALWAYS call get_current_time. Never let model guess."""
+    from agent.tools import extract_location_for_time_query
+    from langchain_core.messages import HumanMessage, ToolMessage
+
+    messages = state.get("messages", [])
+    if not messages:
+        return state
+
+    last = messages[-1]
+    user_text = last.content if hasattr(last, "content") and isinstance(last.content, str) else str(last)
+    location = extract_location_for_time_query(user_text)
+    # If no location (e.g. "that's wrong, check the web"), find previous user message that was a time query
+    if not location:
+        for m in reversed(messages[:-1]):
+            if isinstance(m, HumanMessage):
+                prev = m.content if isinstance(m.content, str) else str(m.content or "")
+                location = extract_location_for_time_query(prev)
+                if location:
+                    break
+    loc_str = (location or "").strip()
+
+    result = tool_router.execute("get_current_time", location=loc_str)
+    tool_results = [{"tool": "get_current_time", "result": result, "args": {"location": loc_str}}]
+    tool_msg = ToolMessage(content=result, tool_call_id="call_time_0")
+
+    return {
+        "messages": list(messages) + [tool_msg],
+        "tool_results": tool_results,
+    }
+
+
 def tool_executor_node(
     state: dict,
     tool_router: Any,
@@ -233,7 +265,7 @@ def tool_executor_node(
             except json.JSONDecodeError:
                 args = {}
         result = tool_router.execute_tool_call({"function": {"name": name, "arguments": args}})
-        results.append({"tool": name, "result": result})
+        results.append({"tool": name, "result": result, "args": args})
 
     # Append tool results as message for Reflector
     from langchain_core.messages import ToolMessage
@@ -248,6 +280,67 @@ def tool_executor_node(
     return {
         "messages": messages + tool_messages,
         "tool_results": results,
+    }
+
+
+def _is_valid_time_output(result: str) -> bool:
+    """Verify time output: numeric HH:MM, recent format, timezone/UTC."""
+    import re
+    if not result or len(result) < 5:
+        return False
+    # Must have HH:MM or H:MM pattern
+    if not re.search(r"\d{1,2}:\d{2}", result):
+        return False
+    # Must have AM/PM or timezone/UTC
+    if not (re.search(r"\b(AM|PM)\b", result, re.I) or "UTC" in result.upper() or "from web" in result):
+        return False
+    return True
+
+
+def time_validator_node(state: dict, tool_router: Any) -> dict:
+    """Critic: Verify time output. If suspicious (truncated, missing digits), re-call once.
+    If still bad -> witty error for reflector."""
+    from langchain_core.messages import ToolMessage
+
+    results = state.get("tool_results", [])
+    messages = state.get("messages", [])
+
+    time_indices = [i for i, r in enumerate(results) if r.get("tool") == "get_current_time"]
+    if not time_indices:
+        return state
+
+    updated_results = list(results)
+    updated_messages = list(messages)
+    tool_msg_start = len(messages) - len(results) if len(messages) >= len(results) else 0
+
+    for idx in time_indices:
+        r = updated_results[idx]
+        content = r.get("result", "")
+        if not _is_valid_time_output(content):
+            args = r.get("args", {})
+            location = args.get("location", "")
+            # Re-call once with same location
+            new_result = tool_router.execute("get_current_time", location=location or "")
+            if _is_valid_time_output(new_result):
+                updated_results[idx] = {"tool": "get_current_time", "result": new_result, "args": args}
+                msg_idx = tool_msg_start + idx
+                if 0 <= msg_idx < len(updated_messages) and isinstance(updated_messages[msg_idx], ToolMessage):
+                    updated_messages[msg_idx] = ToolMessage(
+                        content=new_result, tool_call_id=updated_messages[msg_idx].tool_call_id
+                    )
+            else:
+                # Still bad - inject witty error for reflector
+                err_msg = "My clocks appear to be conspiring against me again, Sir. Let me double-check..."
+                updated_results[idx] = {"tool": "get_current_time", "result": err_msg, "args": args}
+                msg_idx = tool_msg_start + idx
+                if 0 <= msg_idx < len(updated_messages) and isinstance(updated_messages[msg_idx], ToolMessage):
+                    updated_messages[msg_idx] = ToolMessage(
+                        content=err_msg, tool_call_id=updated_messages[msg_idx].tool_call_id
+                    )
+
+    return {
+        "messages": updated_messages,
+        "tool_results": updated_results,
     }
 
 

@@ -77,16 +77,23 @@ class SpeechToText:
         self,
         audio_path: str,
         language: Optional[str] = None,
+        vad_filter: Optional[bool] = None,
     ) -> str:
-        """Transcribe audio file to text."""
+        """Transcribe audio file to text.
+
+        vad_filter: Use Silero VAD to filter silence/background (reduces false positives).
+        Default True when not specified (config voice.use_vad).
+        """
         self._ensure_model()
         lang = language or self._language
+        # Issue 1: VAD filters silence/background - reduces "thank you" etc. from noise
+        use_vad = vad_filter if vad_filter is not None else True
         try:
             segments, info = self._model.transcribe(
                 audio_path,
                 language=lang,
                 beam_size=self._beam_size,
-                vad_filter=False,  # VAD can sometimes filter out valid speech
+                vad_filter=use_vad,
             )
         except RuntimeError as e:
             if self._device == "cuda" and ("cublas" in str(e).lower() or "cuda" in str(e).lower() or "dll" in str(e).lower()):
@@ -98,14 +105,19 @@ class SpeechToText:
                     audio_path,
                     language=lang,
                     beam_size=self._beam_size,
-                    vad_filter=False,
+                    vad_filter=use_vad,
                 )
             else:
                 raise
         text = " ".join(s.text for s in segments).strip()
         return text or ""
 
-    def transcribe_bytes(self, audio_bytes: bytes, sample_rate: int = 16000) -> str:
+    def transcribe_bytes(
+        self,
+        audio_bytes: bytes,
+        sample_rate: int = 16000,
+        vad_filter: Optional[bool] = None,
+    ) -> str:
         """Transcribe raw audio bytes (mono, 16kHz typical)."""
         import tempfile
         import wave
@@ -115,4 +127,4 @@ class SpeechToText:
                 wav.setsampwidth(2)
                 wav.setframerate(sample_rate)
                 wav.writeframes(audio_bytes)
-            return self.transcribe(f.name)
+            return self.transcribe(f.name, vad_filter=vad_filter)

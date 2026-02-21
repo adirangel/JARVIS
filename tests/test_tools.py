@@ -47,3 +47,44 @@ def test_try_open_browser_hebrew():
         assert try_open_browser_from_intent("חפש מזג אוויר", tool_router) is True
         # English: open youtube (sanity check)
         assert try_open_browser_from_intent("open youtube please", tool_router) is True
+
+
+def test_get_current_time_beer_sheva():
+    """Be'er Sheva and variants should return Asia/Jerusalem time."""
+    from agent.tools import get_current_time_execute
+    import re
+    for loc in ["Be'er Sheva", "Beersheba", "Beer Sheva", "beer sheva"]:
+        result = get_current_time_execute(loc)
+        assert "AM" in result or "PM" in result, f"Expected AM/PM in {result}"
+        assert re.search(r"\d{1,2}:\d{2}", result), f"Expected HH:MM in {result}"
+        assert "UTC" in result or "IST" in result or "from web" in result, f"Expected timezone in {result}"
+
+
+def test_get_current_time_tokyo():
+    """Tokyo should return Asia/Tokyo time."""
+    from agent.tools import get_current_time_execute
+    import re
+    result = get_current_time_execute("Tokyo")
+    assert "AM" in result or "PM" in result
+    assert re.search(r"\d{1,2}:\d{2}", result)
+    assert "UTC" in result or "JST" in result or "from web" in result
+
+
+def test_get_current_time_miami():
+    """Miami should return America/New_York (Eastern), NOT IST."""
+    from agent.tools import get_current_time_execute
+    import re
+    result = get_current_time_execute("Miami")
+    assert "AM" in result or "PM" in result
+    assert re.search(r"\d{1,2}:\d{2}", result)
+    # Miami = Eastern: UTC-5 or UTC-4 (DST). Must NOT be IST (Israel)
+    assert "IST" not in result, f"Miami must not return IST (Israel time): {result}"
+    assert "UTC" in result or "EST" in result or "EDT" in result or "verified" in result
+
+
+def test_get_current_time_default():
+    """Empty/None location defaults to Israel (Asia/Jerusalem)."""
+    from agent.tools import get_current_time_execute
+    result = get_current_time_execute("")
+    assert "AM" in result or "PM" in result
+    assert "UTC" in result or "IST" in result
