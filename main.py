@@ -387,15 +387,18 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
             for lang in attempts:
                 details = stt.transcribe_detailed(tmp_path, language=lang, vad_filter=use_vad)
                 text = (details.get("text") or "").strip()
-                valid, reason = is_valid_transcript(text, min_words=min_words, log_rejections=verbose)
+                end_commands = list(end_commands_cfg) if end_commands_cfg else []
+                valid, reason = is_valid_transcript(
+                    text, min_words=min_words, log_rejections=verbose,
+                    allowed_short=end_commands,
+                )
                 if text and valid:
                     details["text"] = text
                     details["audio_duration"] = duration
                     details["rms"] = rms
                     return details
                 last_reason = reason or "invalid"
-            if verbose:
-                print(f"[Voice] Transcript rejected ({last_reason}).", flush=True)
+            # Don't show "Transcript rejected" to user - it's internal/debug only
             return None
         finally:
             try:

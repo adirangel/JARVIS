@@ -170,7 +170,7 @@ def browser_send_message_execute(url: str = "", message: str = "", site: str = "
 
 BROWSER_SEND_MESSAGE_TOOL = _to_ollama_tool(
     "browser_send_message",
-    "Open a website and type a message into it. Use when user asks to 'send a message to X', 'type on Grok', 'write a message on Chrome to grok.com', 'tell them that...'. Executes the action - does not just suggest text.",
+    "Open a URL in browser and type a message (pyautogui). USE when user says: 'send a message to X', 'type on Grok', 'write on Chrome to grok.com', 'tell them that Y', 'message Grok saying Y'. REQUIRED: actually execute - open browser, wait, type the message. Do NOT just suggest text.",
     {
         "properties": {
             "url": {"type": "string", "description": "Full URL e.g. https://grok.com"},
@@ -429,8 +429,29 @@ def _time_from_web_search(location: str) -> Optional[str]:
     return None
 
 
+def _time_from_pytz(tz_name: str) -> Optional[str]:
+    """Get time via pytz (reliable for known timezones)."""
+    try:
+        import pytz
+        from datetime import datetime
+        tz = pytz.timezone(tz_name)
+        now = datetime.now(tz)
+        offset = now.strftime("%z")
+        if offset:
+            sign = "+" if offset[0] == "+" else "-"
+            hours = int(offset[1:3])
+            mins = int(offset[3:5]) if len(offset) >= 5 else 0
+            utc_str = f"UTC{sign}{hours}" if mins == 0 else f"UTC{sign}{hours}:{mins:02d}"
+        else:
+            utc_str = "UTC"
+        tz_abbr = now.strftime("%Z") or tz_name.split("/")[-1]
+        return f"{now.strftime('%I:%M %p')} {tz_abbr} ({utc_str})"
+    except Exception:
+        return None
+
+
 def get_current_time(location: Optional[str] = None, config: Optional[dict] = None) -> str:
-    """Get REAL current time. Chrome (time.is) > time.now API > web search > system clock.
+    """Get REAL current time. pytz (known cities) > time.now API > Chrome > web search.
     Returns: HH:MM AM/PM (UTC+offset) e.g. 06:17 AM (UTC+2)"""
     from datetime import datetime
 
@@ -445,7 +466,7 @@ def get_current_time(location: Optional[str] = None, config: Optional[dict] = No
     tools_cfg = cfg.get("tools", {})
     time_verify = tools_cfg.get("time_verify", "api")
 
-    # Resolve location to IANA timezone (for API fallback)
+    # Resolve location to IANA timezone
     loc_norm = _normalize_location(loc)
     tz_name = _CITY_TO_TZ.get(loc_norm)
     if not tz_name:
@@ -456,69 +477,44 @@ def get_current_time(location: Optional[str] = None, config: Optional[dict] = No
         else:
             tz_name = _DEFAULT_TZ
 
-    # PRIMARY (when time_verify=chrome): Chrome via time.is - user's browser, real web
-    if time_verify == "chrome":
-        chrome_result = _time_from_chrome(loc)
-        if chrome_result:
-            if debug:
-                print(f"[get_current_time] output (Chrome)={repr(chrome_result)}", flush=True)
-            return chrome_result
+    # PRIMARY for known cities: pytz (reliable - avoids API/Chrome returning wrong TZ e.g. IST for Thailand)
+    pytz_result = _time_from_pytz(tz_name)
+    if pytz_result:
+        if debug:
+            print(f"[get_current_time] output (pytz)={repr(pytz_result)}", flush=True)
+        return pytz_result
 
-    # PRIMARY (when time_verify=api) or FALLBACK: time.now API
+    # FALLBACK: time.now API
     api_result = _time_from_api(tz_name)
     if api_result:
-        if debug:
-            print(f"[get_current_time] output (API)={repr(api_result)}", flush=True)
-        return api_result
-
-    # FALLBACK: Chrome if not tried yet (e.g. API failed)
-    if time_verify != "chrome":
-        chrome_result = _time_from_chrome(loc)
-        if chrome_result:
+        # Sanity check: API sometimes returns IST for non-Israel (e.g. Thailand) - reject and try next
+        if "IST" in api_result and tz_name != "Asia/Jerusalem" and "israel" not in loc_norm and "beer" not in loc_norm:
+            api_result = None
+        if api_result:
             if debug:
-                print(f"[get_current_time] output (Chrome fallback)={repr(chrome_result)}", flush=True)
-            return chrome_result
+                print(f"[get_current_time] output (API)={repr(api_result)}", flush=True)
+            return api_result
 
-    # FALLBACK: Web search (for unknown cities or API down)
+    # FALLBACK: Chrome via time.is
+    chrome_result = _time_from_chrome(loc)
+    if chrome_result:
+        if debug:
+            print(f"[get_current_time] output (Chrome)={repr(chrome_result)}", flush=True)
+        return chrome_result
+
+    # FALLBACK: Web search (for unknown cities)
     web_result = _time_from_web_search(loc)
     if web_result:
         if debug:
             print(f"[get_current_time] output (web)={repr(web_result)}", flush=True)
         return web_result
 
-    # FALLBACK 2: System clock via pytz
-    try:
-        import pytz
-    except ImportError:
-        pytz = None
-
-    if pytz is None:
-        from datetime import timezone
-        now = datetime.now(timezone.utc)
-        out = now.strftime("%I:%M %p UTC (UTC+0)")
-        if debug:
-            print(f"[get_current_time] output (no pytz)={repr(out)}", flush=True)
-        return out
-
-    try:
-        tz = pytz.timezone(tz_name)
-    except Exception:
-        tz = pytz.timezone(_DEFAULT_TZ)
-
-    now = datetime.now(tz)
-    offset = now.strftime("%z")
-    if offset:
-        sign = "+" if offset[0] == "+" else "-"
-        hours = int(offset[1:3])
-        mins = int(offset[3:5]) if len(offset) >= 5 else 0
-        utc_str = f"UTC{sign}{hours}" if mins == 0 else f"UTC{sign}{hours}:{mins:02d}"
-    else:
-        utc_str = "UTC"
-    tz_abbr = now.strftime("%Z") or tz_name.split("/")[-1]
-    out = f"{now.strftime('%I:%M %p')} {tz_abbr} ({utc_str})"
-
+    # FALLBACK: System clock via datetime (no pytz)
+    from datetime import timezone
+    now = datetime.now(timezone.utc)
+    out = now.strftime("%I:%M %p UTC (UTC+0)")
     if debug:
-        print(f"[get_current_time] output (system clock fallback)={repr(out)}", flush=True)
+        print(f"[get_current_time] output (fallback)={repr(out)}", flush=True)
     return out
 
 
