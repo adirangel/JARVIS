@@ -428,6 +428,7 @@ def heartbeat_node(
         summary_parts.append(f"Reminders: {len(reminders)}")
 
     from langchain_core.messages import HumanMessage, SystemMessage
+from agent.utils import stream_text
     llm = _get_llm(model, base_url)
     prompt = f"Sir has the following: {'; '.join(summary_parts)}. Provide a brief, witty one-sentence summary to speak aloud. Stay in character as JARVIS."
     try:
