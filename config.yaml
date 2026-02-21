@@ -99,7 +99,7 @@ show_latency: true
 
 # Context size tracking (tokens per session)
 context:
-  max_tokens: 32000
+  max_tokens: 256,000
   warning_threshold: 0.85
   show_after_each_turn: true
 

@@ -80,7 +80,7 @@ class HeartbeatConfig(BaseModel):
     interval_minutes: int = 30
 
 class ContextConfig(BaseModel):
-    max_tokens: int = 32000
+    max_tokens: int = 256,000
     warning_threshold: float = 0.85
     show_after_each_turn: bool = True
 
