@@ -1,0 +1,76 @@
+# API keys and secrets
+api_key.txt
+openai_api_key.txt
+*.key
+.env
+.env.local
+.env.*.local
+*.pyd
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+env/
+
+# IDE and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# Logs and temp
+log/
+*.log
+tmp/
+temp/
+*.tmp
+
+# Project-specific data and cache
+memory/
+data/
+.a0proj/
+_backup/
+
+# ChromaDB / embeddings
+chroma_data/
+*.faiss
+*.pkl
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/

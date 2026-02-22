@@ -1,0 +1,34 @@
+wake_word: "Hey Jarvis"
+debounce_seconds: 1.5
+wake_verbose: true
+stt_engine: "google"
+stt_timeout: 5
+llm_provider: "stepfun"
+llm_model: "step-3.5-flash"
+llm_api_key_file: "api_key.txt"
+llm_temperature: 0.8
+llm_max_tokens: 500
+stream: true
+tts_engine: "piper"
+voice_id: "default"
+tts_speed: 1.0
+streaming: true
+personality:
+  persona: "jarvis_paul_bettany"
+  mood: "dynamic"
+  use_sir: true
+computer_control_enabled: true
+search_enabled: true
+system_monitor_enabled: true
+memory_long_term_enabled: true
+memory_embeddings_model: "sentence-transformers/all-MiniLM-L6-v2"
+memory_summarize_interval_days: 7
+debug: true
+log_dir: "log"
+console_colors: true
+print_thoughts: true
+print_timers: true
+max_conversation_turns: 15
+session_idle_timeout_seconds: 300
+proactive_insights: true
+proactive_interval_minutes: 10

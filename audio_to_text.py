@@ -40,3 +40,8 @@ def audio_to_text(api_key, audio_file_path, silence_threshold=200):
         return ""
 
     return transcribed_text
+
+
+def transcribe(audio_file_path: str, api_key: str, silence_threshold: int = 200) -> str:
+    """Alias for audio_to_text with (audio_file, api_key) signature for agent compatibility."""
+    return audio_to_text(api_key, audio_file_path, silence_threshold)

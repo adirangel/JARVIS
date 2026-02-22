@@ -1,88 +1,125 @@
-import time
 import argparse
+import asyncio
+import os
+import sys
+import yaml
+from datetime import datetime
+from loguru import logger
 
-from text_to_speech import text_to_speech
-from play_audio import play_audio
-from record_audio import record_audio
-from generate_response import generate_response
-from audio_to_text import audio_to_text
-from handle_response import handle_response
-from fetch_article import fetch_article
-from bing_search import get_bing_search_results
-from search_and_analyze import search_and_analyze
-from database import create_connection, insert_search_data, get_search_data
+# Disable other loggers, configure loguru
+logger.remove()
+logger.add(
+    "log/jarvis-{time:YYYY-MM-DD}.log",
+    rotation="1 day",
+    retention="7 days",
+    level="DEBUG",
+    format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
+)
+logger.add(sys.stderr, level="INFO", colorize=True)
 
-with open('api_key.txt', 'r') as file:
-    api_key = file.read().strip()
+from agent.graph import SessionState, AgentGraph
+from agent.nodes import InputNode, ReflectorNode, ToolNode, OutputNode
+from agent.personality import Personality
+from agent.utils import color_print
+from memory.short_term import ShortTermMemory
+from memory.long_term import LongTermMemory
+from voice.wake import WakeListener
+from text_to_speech import TTS
 
-with open('azure_api.txt', 'r') as file:
-    azure_speech_key = file.read().strip()
-
-with open('bing_api_key.txt', 'r') as file:
-    bing_api_key = file.read().strip()
-
-azure_speech_region = "eastus"
-
-conversation_history = []
-max_turns = 15
-
-db_file = "search_data.db"
-conn = create_connection(db_file)
-cache_duration = 86400
-
-parser = argparse.ArgumentParser()
-parser.add_argument('--speak', action='store_true', help='Use voice input (default mode)')
-parser.add_argument('--prompt', action='store_true', help='Use text input (chat mode)')
-args = parser.parse_args()
-
-while True:
-    if args.prompt:
-        transcribed_text = input("Enter your text: ")
-        print("Transcribed Text:", transcribed_text)
-        conversation_history.append(transcribed_text)
+def load_config():
+    with open('config/settings.yaml', 'r') as f:
+        cfg = yaml.safe_load(f)
+    # Load API key if file exists
+    key_file = cfg.get('llm_api_key_file', 'api_key.txt')
+    if os.path.exists(key_file):
+        with open(key_file, 'r') as f:
+            cfg['llm_api_key'] = f.read().strip()
     else:
-        delay_seconds = 2
-        print(f"Starting recording in {delay_seconds} seconds...")
-        time.sleep(delay_seconds)
+        cfg['llm_api_key'] = None
+    return cfg
 
-        audio_file_path = "output.wav"
-        record_audio(audio_file_path)
-
-        transcribed_text = audio_to_text(api_key, audio_file_path)
-        print("Transcribed Text:", transcribed_text)
-
-        if transcribed_text.strip() == "":
-            print("No input detected, stopping.")
-            break
-
-        conversation_history.append(transcribed_text)
-
-    current_time = time.time()
-    search_data = get_search_data(conn, transcribed_text)
-    if search_data and (current_time - float(search_data[2])) < cache_duration:
-        summaries = search_data[1]
+async def initialize_agent(config):
+    # Session state
+    session = SessionState(
+        session_id=f"session_{int(datetime.now().timestamp())}",
+        conversation_history=[],
+        timers={},
+        metadata={},
+        speech_lock=asyncio.Lock(),
+        stopped=asyncio.Event()
+    )
+    session.config = config
+    # Memories
+    session.short_term_memory = ShortTermMemory(max_turns=config.get('max_conversation_turns', 15))
+    if config.get('memory_long_term_enabled', True):
+        try:
+            session.long_term_memory = LongTermMemory(config)
+        except Exception as e:
+            logger.warning(f"Long-term memory disabled: {e}")
+            session.long_term_memory = None
     else:
-        # Clear conversation history if the user repeats the question
-        if len(conversation_history) >= 2 and conversation_history[-2] == transcribed_text:
-            conversation_history = [transcribed_text]
+        session.long_term_memory = None
+    # Personality
+    session.personality = Personality(config.get('personality', {}))
+    # Build agent graph
+    input_node = InputNode(name="input")
+    reflector = ReflectorNode(name="reflector", config=config)
+    tool_node = ToolNode(name="tool")
+    output_node = OutputNode(name="output")
+    graph = AgentGraph(entry_node=input_node)
+    graph.add_node(reflector)
+    graph.add_node(tool_node)
+    graph.add_node(output_node)
+    # TTS (initialize later in reflector)
+    session.tts = None
+    return session, graph
 
-        search_results, summaries = search_and_analyze(transcribed_text, bing_api_key, api_key, conversation_history)
-        if search_results:
-            insert_search_data(conn, transcribed_text, search_results, summaries, current_time)
-        else:
-            response = generate_response(api_key, conversation_history, transcribed_text)
-            summaries = response
+async def handle_wake(transcript: str, session: SessionState, graph: AgentGraph, wake_listener: WakeListener):
+    color_print('info', f"[Wake] Detected: {transcript}")
+    # Debounce handled by WakeListener
+    if session.speech_lock.locked():
+        color_print('warn', "[Wake] Already speaking, interrupting...")
+        # TODO: interrupt current TTS playback
+        session.stopped.set()  # Signal nodes to stop
+        await asyncio.sleep(0.1)
+        session.stopped.clear()
+    async with session.speech_lock:
+        session.metadata['audio_file'] = None  # will be captured by InputNode from STT streaming
+        session.current_input = transcript
+        session.conversation_history.append({"role": "user", "content": transcript})
+        # Run agent graph
+        try:
+            async for result in graph.run(session, max_turns=config.get('max_conversation_turns', 15)):
+                # result from each node; output_node prints
+                pass
+        except Exception as e:
+            color_print('error', f"Agent error: {e}")
+        finally:
+            # After response done, release lock after audio finishes? TTS finalize handles
+            pass
 
-    conversation_history.append(summaries)
+async def main():
+    global config
+    config = load_config()
+    logger.info("Starting JARVIS with config", config=config)
+    session, graph = await initialize_agent(config)
+    # Wake listener
+    wake = WakeListener(config)
+    # Define callback that triggers agent
+    def on_wake(transcript: str):
+        asyncio.create_task(handle_wake(transcript, session, graph, wake))
+    wake.start(callback=on_wake)
+    logger.info("JARVIS is listening for wake word...")
+    try:
+        # Keep main thread alive
+        while True:
+            await asyncio.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("Shutting down...")
+        wake.stop()
 
-    if len(conversation_history) > max_turns:
-        conversation_history.pop(0)
-        conversation_history.pop(0)
-
-    handled_response = handle_response(summaries)
-    print("Jarvis' response:", handled_response)
-
-    output_speech_file = "response.wav"
-    text_to_speech(azure_speech_key, azure_speech_region, handled_response, output_speech_file)
-
-    play_audio(output_speech_file)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", default="voice", choices=["voice", "cli"], help="voice (wake word) or cli")
+    args = parser.parse_args()
+    asyncio.run(main())
