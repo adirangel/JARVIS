@@ -45,10 +45,8 @@ class ReflectorNode(Node):
         self.provider = self.config.get('llm_provider', 'stepfun')
     
     async def initialize(self):
-        engine = self.config.get('tts_engine')
-        if engine and engine.lower() != 'none' and self.streaming:
-            self.tts = TTS(self.config)
-            await self.tts.initialize()
+        self.tts = TTS(self.config)
+        await self.tts.initialize()
     
     async def process(self, state: SessionState) -> str:
         await self.initialize()
@@ -75,7 +73,7 @@ class ReflectorNode(Node):
         try:
             async for chunk in self._stream_response(messages):
                 full_response += chunk
-                if self.streaming and self.tts:
+                if self.streaming:
                     await self.tts.stream_chunk(chunk)
         except asyncio.CancelledError:
             color_print('error', 'ReflectorNode: Interrupted by wake')
@@ -84,8 +82,7 @@ class ReflectorNode(Node):
             color_print('error', f"ReflectorNode: {e}")
             full_response = "I encountered an error, sir."
         # Finalize speech
-        if self.tts:
-            await self.tts.finalize()
+        await self.tts.finalize()
         # Record
         state.conversation_history.append({"role": "assistant", "content": full_response})
         state.short_term_memory.add("assistant", full_response)
