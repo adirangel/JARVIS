@@ -86,6 +86,7 @@ async def handle_wake(transcript: str, session: SessionState, graph: AgentGraph,
     # Debounce handled by WakeListener
     if session.speech_lock.locked():
         color_print('warn', "[Wake] Already speaking, interrupting...")
+        # TODO: interrupt current TTS playback
         session.stopped.set()  # Signal nodes to stop
         await asyncio.sleep(0.1)
         session.stopped.clear()
@@ -104,86 +105,28 @@ async def handle_wake(transcript: str, session: SessionState, graph: AgentGraph,
             # After response done, release lock after audio finishes? TTS finalize handles
             pass
 
-async def cli_loop(session: SessionState, graph: AgentGraph, config):
-    """Interactive console mode."""
-    color_print('success', '[CLI] JARVIS is ready. Type your messages below. Type "exit" or "quit" to stop.')
-    while True:
-        try:
-            user_input = input('You: ').strip()
-        except (EOFError, KeyboardInterrupt):
-            break
-        if user_input.lower() in ('exit', 'quit', 'q'):
-            color_print('info', '[CLI] Exiting.')
-            break
-        if not user_input:
-            continue
-        # Run a single turn via graph
-        async with session.speech_lock:
-            session.current_input = user_input
-            session.conversation_history.append({"role": "user", "content": user_input})
-            color_print('info', f'[CLI] Processing: {user_input}')
-            try:
-                async for result in graph.run(session, max_turns=1):
-                    if result:
-                        # If result is non‑empty string, it's from reflector or tool node.
-                        pass
-                # Response is printed by OutputNode; after graph.run finishes, we can continue.
-            except Exception as e:
-                color_print('error', f'Agent error: {e}')
-        # Clear input for next iteration
-        session.current_input = ''
-
-async def single_text_test(session: SessionState, graph: AgentGraph, text: str):
-    """One‑shot test: process a single user text and print response."""
-    color_print('info', f'[Test] User: {text}')
-    async with session.speech_lock:
-        session.current_input = text
-        session.conversation_history.append({"role": "user", "content": text})
-        try:
-            async for result in graph.run(session, max_turns=1):
-                pass
-        except Exception as e:
-            color_print('error', f'Agent error: {e}')
-    # Response printed by OutputNode; we can also retrieve from session.last_response
-    if session.last_response:
-        color_print('success', f'[Test] JARVIS: {session.last_response}')
-    else:
-        color_print('error', '[Test] No response generated.')
-
 async def main():
     global config
     config = load_config()
     logger.info("Starting JARVIS with config", config=config)
     session, graph = await initialize_agent(config)
-    
-    if args.mode == "voice":
-        # Wake listener
-        wake = WakeListener(config)
-        # Define callback that triggers agent
-        def on_wake(transcript: str):
-            asyncio.create_task(handle_wake(transcript, session, graph, wake))
-        wake.start(callback=on_wake)
-        logger.info("JARVIS is listening for wake word...")
-        try:
-            # Keep main thread alive
-            while True:
-                await asyncio.sleep(1)
-        except KeyboardInterrupt:
-            logger.info("Shutting down...")
-            wake.stop()
-    elif args.mode == "cli":
-        await cli_loop(session, graph, config)
-    elif args.mode == "test":
-        if args.test_text:
-            await single_text_test(session, graph, args.test_text)
-        else:
-            logger.error("--test‑text required when mode=test")
-    else:
-        logger.error(f"Unknown mode: {args.mode}")
+    # Wake listener
+    wake = WakeListener(config)
+    # Define callback that triggers agent
+    def on_wake(transcript: str):
+        asyncio.create_task(handle_wake(transcript, session, graph, wake))
+    wake.start(callback=on_wake)
+    logger.info("JARVIS is listening for wake word...")
+    try:
+        # Keep main thread alive
+        while True:
+            await asyncio.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("Shutting down...")
+        wake.stop()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", default="voice", choices=["voice", "cli", "test"], help="voice (wake word) or cli (console) or test (single text)")
-    parser.add_argument("--test-text", help="For mode=test, provide the text input.")
+    parser.add_argument("--mode", default="voice", choices=["voice", "cli"], help="voice (wake word) or cli")
     args = parser.parse_args()
     asyncio.run(main())

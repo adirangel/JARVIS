@@ -1,0 +1,115 @@
+"""Heartbeat: Every 30 minutes, check memory for pending tasks/reminders.
+
+Execute if possible, speak witty summary via TTS.
+"""
+
+from __future__ import annotations
+
+import time
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+
+def load_config() -> dict:
+    import yaml
+    base = Path(__file__).parent
+    cfg_path = base / "config.yaml"
+    if cfg_path.exists():
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+
+def heartbeat_job(
+    memory: Any,
+    tts_speak: Callable[[str], None],
+    llm_invoke: Optional[Callable[[str], str]] = None,
+) -> None:
+    """Run heartbeat: check tasks/reminders, speak witty summary every 30 min (even when idle)."""
+    pending = getattr(memory, "get_pending_tasks", lambda: [])()
+    reminders = getattr(memory, "get_reminders", lambda: [])()
+
+    # Mark reminders as done (user will be notified) - fix: pass each id explicitly
+    mark_done = getattr(memory, "mark_reminder_done", None)
+    if mark_done and callable(mark_done):
+        for r in reminders:
+            rid = r.get("id")
+            if rid is not None:
+                mark_done(rid)
+
+    # Build summary - always speak (even when idle)
+    parts = []
+    if pending:
+        parts.append(f"{len(pending)} pending task(s)")
+    if reminders:
+        parts.append(f"{len(reminders)} reminder(s)")
+    if not parts:
+        summary = "idle, no pending tasks or reminders"
+    else:
+        summary = "; ".join(parts)
+
+    if llm_invoke:
+        try:
+            prompt = (
+                f"JARVIS heartbeat. Sir has: {summary}. "
+                "One brief, witty sentence to speak aloud. Dry British wit. Address as Sir. "
+                "If idle: something like 'All systems nominal' or 'Awaiting your command.'"
+            )
+            text = llm_invoke(prompt)
+            if text and text.strip():
+                tts_speak(text.strip())
+            else:
+                tts_speak(f"Sir, you have {summary}." if "idle" not in summary else "Sir, all systems nominal. Awaiting your command.")
+        except Exception:
+            tts_speak(f"Sir, you have {summary}." if "idle" not in summary else "Sir, all systems nominal.")
+    else:
+        tts_speak(f"Sir, you have {summary}." if "idle" not in summary else "Sir, all systems nominal. Awaiting your command.")
+
+
+def start_heartbeat(
+    memory: Any,
+    tts_speak: Callable[[str], None],
+    llm_invoke: Optional[Callable[[str], str]] = None,
+    interval_minutes: int = 30,
+    allow_run: Optional[Callable[[], bool]] = None,
+) -> Any:
+    """Start APScheduler heartbeat in separate low-priority thread. Never blocks main response."""
+    import threading
+
+    def _safe_job() -> None:
+        if allow_run is not None:
+            try:
+                if not allow_run():
+                    return
+            except Exception:
+                return
+        heartbeat_job(memory, tts_speak, llm_invoke=llm_invoke)
+
+    def _run_scheduler() -> None:
+        try:
+            import ctypes
+            # Windows: set thread to lowest priority so heartbeat never blocks main response
+            if hasattr(ctypes, "windll"):
+                try:
+                    ctypes.windll.kernel32.SetThreadPriority(
+                        ctypes.windll.kernel32.GetCurrentThread(),
+                        -2,  # THREAD_PRIORITY_LOWEST
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        from apscheduler.schedulers.background import BackgroundScheduler
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(
+            _safe_job,
+            "interval",
+            minutes=interval_minutes,
+        )
+        scheduler.start()
+        # Keep thread alive so scheduler reference isn't GC'd
+        threading.Event().wait()
+
+    t = threading.Thread(target=_run_scheduler, daemon=True)
+    t.start()
+    return t
