@@ -191,3 +191,4 @@ jarvis/
 ## License
 
 MIT
+# Phase 1+2 completed: async agent, debounced wake, streaming TTS, speech lock, thought visualization, debug timers, personality, computer control, system monitoring, long-term memory, OpenRouter integration.
