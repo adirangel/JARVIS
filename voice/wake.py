@@ -36,6 +36,8 @@ class WakeWordDetector:
         if not OPENWAKEWORD_AVAILABLE:
             raise ImportError("openwakeword required. pip install openwakeword")
         self._model_names = model_names or ["hey_jarvis_v0.1"]
+        self._last_wake = 0.0
+        self._debounce_seconds = 2.0
         # Prefer wake_confidence (0.7-0.85) over legacy threshold for fewer false positives
         base = wake_confidence if wake_confidence is not None else threshold
         self._threshold = max(0.0, min(float(base), 1.0))

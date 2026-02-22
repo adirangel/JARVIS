@@ -444,6 +444,7 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                 pass
 
     def _run_turn(user_text: str, announce_thinking: bool = False) -> tuple[str, float]:
+        t0 = time.perf_counter()
         try_open_browser_from_intent(user_text, tool_router)
 
         thinking_prompt = vc.get("thinking_prompt", "As you wish, Sir...")
@@ -470,10 +471,28 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                     config=config,
                     memory=memory,
                 )
+                # Accumulate full response text and measure LLM latency
+                response_text = ""
+                for chunk in response: response_text += chunk.content
+                t1 = time.perf_counter()
+                llm_ms = (t1 - t0)*1000
+                debug_stats["total_llm_ms"] += llm_ms
+                if announce_thinking: print("[Thought] " + response_text)
+                print(f"[Timers] LLM: {llm_ms:.0f}ms")
+                t_ts0 = time.perf_counter()
                 put_remainder(flush())
             finally:
                 stop_consumer()
                 consumer_thread.join(timeout=30)
+                # Accumulate full response text and measure LLM latency
+                response_text = ""
+                for chunk in response: response_text += chunk.content
+                t1 = time.perf_counter()
+                llm_ms = (t1 - t0)*1000
+                debug_stats["total_llm_ms"] += llm_ms
+                if announce_thinking: print("[Thought] " + response_text)
+                print(f"[Timers] LLM: {llm_ms:.0f}ms")
+                t_ts0 = time.perf_counter()
         else:
             response, latency = invoke_jarvis(
                 graph,
@@ -520,6 +539,8 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
 
         return response, latency
 
+        debug_stats["turns"] += 1
+        print(f"[Stats] Turn {debug_stats['turns']} | LLM total: {debug_stats['total_llm_ms']:.0f}ms | TTS total: {debug_stats['total_tts_ms']:.0f}ms | Wake: {debug_stats['wake_count']}")
     def _run_active_session() -> None:
         session.activate()
         from agent.timing_context import reset_session_tokens
@@ -577,6 +598,7 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                 print("[Session] Wake-only mode.", flush=True)
 
     def on_wake() -> None:
+        debug_stats["wake_count"] += 1
         if session.is_active() or _processing[0]:
             return
         now = time.monotonic()
@@ -680,6 +702,8 @@ def create_tray_icon(config: dict):
 
 def main():
     config = load_config()
+    speech_lock = threading.Lock()
+    debug_stats = dict(turns=0, total_llm_ms=0.0, total_tts_ms=0.0, wake_count=0)
 
     # Console mode: text input, no tray.
     if "--console" in sys.argv or "-c" in sys.argv:
