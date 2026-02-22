@@ -1,460 +1,166 @@
-"""LangGraph nodes - single model (qwen3:4b) for all tasks.
+import asyncio
+import os
+from typing import Optional, Dict, Any, List
+from agent.graph import Node, SessionState
+from agent.utils import DebugTimer, color_print
+from agent.personality import Personality
+from audio_to_text import transcribe
+from text_to_speech import TTS
+from tools.computer_control import *
+from tools.system_monitor import get_system_summary, format_for_speech
+from memory.short_term import ShortTermMemory
+from memory.long_term import LongTermMemory
 
-- Planner: intent, planning, tool selection
-- Reflector: final response with Paul Bettany personality
-- Tool Executor: executes tools; learn_new_skill uses same model for code gen
-"""
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
-from __future__ import annotations
+class InputNode(Node):
+    async def process(self, state: SessionState) -> Optional[str]:
+        color_print('thought', 'InputNode: Listening...')
+        # Preserve input already set (e.g. from wake word)
+        if getattr(state, 'current_input', None):
+            return state.current_input
+        audio_file = state.metadata.get('audio_file')
+        if not audio_file:
+            state.current_input = "Hey Jarvis, what's the time?"  # test fallback
+            return state.current_input
+        api_key = state.config.get('stt_api_key') or state.config.get('llm_api_key')
+        text = transcribe(audio_file, api_key)
+        color_print('info', f"User said: {text}")
+        state.conversation_history.append({"role": "user", "content": text})
+        state.current_input = text
+        return text
 
-import contextvars
-import time
-from typing import Any, Optional
-
-_stream_callback: contextvars.ContextVar[Optional[callable]] = contextvars.ContextVar("stream_callback", default=None)
-_timing_callback: contextvars.ContextVar[Optional[callable]] = contextvars.ContextVar("timing_callback", default=None)
-
-
-def _timing(name: str, elapsed_ms: float) -> None:
-    cb = _timing_callback.get()
-    if cb:
-        cb(name, elapsed_ms)
-
-
-# Lazy imports for optional deps
-def _get_llm(
-    model: str,
-    base_url: str = "http://localhost:11434",
-    temperature: float = 0.7,
-    num_predict: Optional[int] = None,
-    num_ctx: Optional[int] = None,
-    llm_config: Optional[dict] = None,
-):
-    from agent.llm_factory import get_llm
-
-    cfg = llm_config or {}
-    provider = cfg.get("provider", "ollama")
-    api_key = cfg.get("api_key")
-    return get_llm(
-        model=model,
-        base_url=base_url,
-        temperature=temperature,
-        num_predict=num_predict,
-        num_ctx=num_ctx,
-        provider=provider,
-        api_key=api_key,
-    )
-
-
-def listener_node(state: dict) -> dict:
-    """Receives user input, updates state. Entry point."""
-    # State already has messages from input
-    return {"messages": state.get("messages", [])}
-
-
-def fastpath_node(
-    state: dict,
-    model: str,
-    base_url: str,
-    system_prompt: str,
-    memory: Optional[Any] = None,
-    llm_config: Optional[dict] = None,
-) -> dict:
-    """FastPath: Simple commands (no tools) -> direct Reflector. Skips Planner for sub-800ms first token."""
-    from langchain_core.messages import AIMessage, SystemMessage
-
-    llm_cfg = llm_config or {}
-    t0 = time.perf_counter()
-    llm = _get_llm(
-        model,
-        base_url,
-        temperature=llm_cfg.get("reflector_temperature", 0.5),
-        num_predict=llm_cfg.get("max_tokens", 128),
-        num_ctx=llm_cfg.get("num_ctx_reflector", 4096),
-        llm_config=llm_cfg,
-    )
-    messages = state.get("messages", [])
-    if not messages:
-        return state
-
-    last_content = ""
-    for m in reversed(messages):
-        if hasattr(m, "content") and m.content:
-            last_content = m.content if isinstance(m.content, str) else str(m.content)
-            break
-    mem_ctx = _get_memory_context(memory, last_content or "general")
-    personality = "CRITICAL: Stay in character. Paul Bettany JARVIS. Dry British wit. Address as Sir."
-    system = SystemMessage(content=personality + "\n\n" + system_prompt + mem_ctx)
-    trimmed = _trim_messages(messages, max_turns=llm_cfg.get("context_window", 6))
-    msgs = [system] + list(trimmed)
-    stream_cb = _stream_callback.get()
-
-    try:
-        if stream_cb:
-            chunks = []
-            for chunk in llm.stream(msgs):
-                if hasattr(chunk, "content") and chunk.content:
-                    chunks.append(chunk.content)
-                    stream_cb(chunk.content)
-            content = "".join(chunks)
-            response = AIMessage(content=content)
+class ReflectorNode(Node):
+    def __init__(self, name: str = "reflector", config: Optional[Dict[str, Any]] = None):
+        super().__init__(name)
+        self.config = config or {}
+        self.personality = Personality(self.config.get('personality', {}))
+        self.tts: Optional[TTS] = None
+        self.max_tokens = self.config.get('llm_max_tokens', 500)
+        self.streaming = self.config.get('streaming', True)
+        self.api_key = self.config.get('llm_api_key')
+        self.provider = self.config.get('llm_provider', 'stepfun')
+    
+    async def initialize(self):
+        self.tts = TTS(self.config)
+        await self.tts.initialize()
+    
+    async def process(self, state: SessionState) -> str:
+        await self.initialize()
+        user_input = state.current_input
+        if not user_input:
+            return ""
+        # Long-term memory
+        if state.long_term_memory:
+            memories = state.long_term_memory.retrieve(user_input, k=3)
+            memory_context = "\n".join([doc for doc, _, _ in memories])
         else:
-            response = llm.invoke(msgs)
-            content = response.content if hasattr(response, "content") else str(response)
-        elapsed = (time.perf_counter() - t0) * 1000
-        _timing("FastPath", elapsed)
-        return {
-            "messages": list(messages) + [response],
-            "final_response": content,
-        }
-    except Exception as e:
-        return {
-            "messages": messages,
-            "final_response": f"I apologise, Sir. An error occurred: {e}",
-        }
+            memory_context = ""
+        # Build messages
+        system_prompt = self.personality.generate_system_prompt()
+        recent = state.short_term_memory.get_context()
+        messages = [{"role": "system", "content": system_prompt}]
+        if memory_context:
+            messages.append({"role": "system", "content": f"Relevant memories:\n{memory_context}"})
+        messages.extend(recent)
+        messages.append({"role": "user", "content": user_input})
+        # Stream response & TTS
+        color_print('thought', 'ReflectorNode: Thinking...')
+        full_response = ""
+        try:
+            async for chunk in self._stream_response(messages):
+                full_response += chunk
+                if self.streaming:
+                    await self.tts.stream_chunk(chunk)
+        except asyncio.CancelledError:
+            color_print('error', 'ReflectorNode: Interrupted by wake')
+            raise
+        except Exception as e:
+            color_print('error', f"ReflectorNode: {e}")
+            full_response = "I encountered an error, sir."
+        # Finalize speech
+        await self.tts.finalize()
+        # Record
+        state.conversation_history.append({"role": "assistant", "content": full_response})
+        state.short_term_memory.add("assistant", full_response)
+        state.last_response = full_response
+        self._store_important_info(user_input, full_response, state)
+        return full_response
+    
+    async def _stream_response(self, messages: List[Dict[str, str]]):
+        try:
+            from openai import OpenAI
+            base_url = self.config.get('llm_base_url')
+            if not base_url:
+                base_url = "https://api.stepfun.com/v1" if self.provider == "stepfun" else "https://openrouter.ai/api/v1"
+            client = OpenAI(api_key=self.api_key, base_url=base_url)
+            stream = client.chat.completions.create(
+                model=self.config.get('llm_model', 'openai/gpt-4o-mini'),
+                messages=messages,
+                temperature=self.config.get('llm_temperature', 0.8),
+                max_tokens=self.max_tokens,
+                stream=True
+            )
+            for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+        except Exception as e:
+            color_print('error', f"LLM streaming error: {e}")
+            yield "I apologize, I encountered an error."
+    
+    def _store_important_info(self, user_input: str, response: str, state: SessionState):
+        if state.long_term_memory:
+            if "my name is" in user_input.lower():
+                words = user_input.split()
+                if "is" in words:
+                    idx = words.index("is")
+                    if idx+1 < len(words):
+                        name = words[idx+1].strip(",.!?")
+                        fact = f"User's name is {name}"
+                        state.long_term_memory.store(fact, category='user')
+            if any(trigger in user_input.lower() for trigger in ['prefer', 'like', 'love', 'hate', 'enjoy']):
+                state.long_term_memory.store(f"User preference: {user_input}", category='preference')
 
-
-def _get_memory_context(memory: Any, query: str, max_turns: int = 10) -> str:
-    """Build memory context (facts, recent conversations) for consistency."""
-    if not memory:
-        return ""
-    ctx = getattr(memory, "build_context", lambda q: "")(query)
-    if not ctx:
-        return ""
-    return f"\n\n## Context (use for consistency)\n{ctx}"
-
-
-def _trim_messages(messages: list, max_turns: int = 6) -> list:
-    """Keep last max_turns exchanges to avoid token overflow (shorter = faster)."""
-    if len(messages) <= max_turns * 2:
-        return messages
-    return list(messages[-(max_turns * 2):])
-
-
-def planner_node(
-    state: dict,
-    model: str,
-    base_url: str,
-    system_prompt: str,
-    tool_router: Any,
-    memory: Optional[Any] = None,
-    llm_config: Optional[dict] = None,
-) -> dict:
-    """Decides intent, plans response, determines if tools needed.
-    Returns tool_calls if tools needed, else direct response plan.
-    """
-    from langchain_core.messages import HumanMessage, SystemMessage
-    from langchain_core.messages import AIMessage
-
-    llm_cfg = llm_config or {}
-    t0 = time.perf_counter()
-    llm = _get_llm(
-        model,
-        base_url,
-        temperature=llm_cfg.get("planner_temperature", 0.5),
-        num_predict=llm_cfg.get("planner_max_tokens", 512),
-        num_ctx=llm_cfg.get("num_ctx_planner", 8192),
-        llm_config=llm_cfg,
-    )
-    messages = state.get("messages", [])
-    if not messages:
-        return state
-
-    # Build prompt for planning
-    last_msg = messages[-1] if messages else None
-    if not last_msg or not hasattr(last_msg, "content"):
-        return state
-
-    user_text = last_msg.content if isinstance(last_msg.content, str) else str(last_msg.content)
-    mem_ctx = _get_memory_context(memory, user_text)
-    system = SystemMessage(content=system_prompt + mem_ctx + "\n\nDecide: tools needed or direct answer? If tools: output JSON with tool names and args.")
-    trimmed = _trim_messages(messages, max_turns=llm_cfg.get("context_window", 10))
-    msgs = [system] + list(trimmed)
-
-    # Bind tools for planning - Planner can request tool execution
-    from langchain_core.tools import StructuredTool
-    ollama_tools = tool_router.get_ollama_tools()
-    lc_tools = []
-    for ot in ollama_tools:
-        fn = ot.get("function", {})
-        name = fn.get("name", "")
-        desc = fn.get("description", "Execute tool")
-        if not name:
-            continue
-        def _make_exec(tool_name):
-            def _exec(**kwargs):
-                return tool_router.execute(tool_name, **kwargs)
-            return _exec
-        lc_tools.append(StructuredTool.from_function(
-            func=_make_exec(name),
-            name=name,
-            description=desc,
-        ))
-    llm_with_tools = llm.bind_tools(lc_tools) if lc_tools else llm
-
-    try:
-        response = llm_with_tools.invoke(msgs)
-        elapsed = (time.perf_counter() - t0) * 1000
-        _timing("Planner", elapsed)
-        tool_calls = getattr(response, "tool_calls", []) or []
-        return {
-            "messages": list(messages) + [response],
-            "tool_calls": tool_calls,
-            "planner_response": response.content if hasattr(response, "content") else str(response),
-        }
-    except Exception as e:
-        return {
-            "messages": messages,
-            "tool_calls": [],
-            "error": str(e),
-        }
-
-
-def time_handler_node(state: dict, tool_router: Any) -> dict:
-    """EAGER time execution: bypass planner, ALWAYS call get_current_time. Never let model guess."""
-    from agent.tools import extract_location_for_time_query
-    from langchain_core.messages import HumanMessage, ToolMessage
-
-    messages = state.get("messages", [])
-    if not messages:
-        return state
-
-    last = messages[-1]
-    user_text = last.content if hasattr(last, "content") and isinstance(last.content, str) else str(last)
-    location = extract_location_for_time_query(user_text)
-    # If no location (e.g. "that's wrong, check the web"), find previous user message that was a time query
-    if not location:
-        for m in reversed(messages[:-1]):
-            if isinstance(m, HumanMessage):
-                prev = m.content if isinstance(m.content, str) else str(m.content or "")
-                location = extract_location_for_time_query(prev)
-                if location:
-                    break
-    loc_str = (location or "").strip()
-
-    result = tool_router.execute("get_current_time", location=loc_str)
-    tool_results = [{"tool": "get_current_time", "result": result, "args": {"location": loc_str}}]
-    tool_msg = ToolMessage(content=result, tool_call_id="call_time_0")
-
-    return {
-        "messages": list(messages) + [tool_msg],
-        "tool_results": tool_results,
-    }
-
-
-def tool_executor_node(
-    state: dict,
-    tool_router: Any,
-) -> dict:
-    """Executes tool calls (no LLM). Planner provides tool names/args; we run them.
-
-    learn_new_skill uses Qwen3 via skills_manager._invoke_tool_llm for code generation.
-    """
-    t0 = time.perf_counter()
-    tool_calls = state.get("tool_calls", [])
-    messages = state.get("messages", [])
-
-    if not tool_calls:
-        return state
-
-    results = []
-    for tc in tool_calls:
-        fn = tc.get("function", tc)
-        name = fn.get("name", tc.get("name", ""))
-        args = fn.get("arguments", tc.get("args", {}))
-        if isinstance(args, str):
-            import json
-            try:
-                args = json.loads(args) if args else {}
-            except json.JSONDecodeError:
-                args = {}
-        result = tool_router.execute_tool_call({"function": {"name": name, "arguments": args}})
-        results.append({"tool": name, "result": result, "args": args})
-
-    # Append tool results as message for Reflector
-    from langchain_core.messages import ToolMessage
-    tool_messages = []
-    for i, r in enumerate(results):
-        tc = tool_calls[i] if i < len(tool_calls) else {}
-        tid = tc.get("id", tc.get("tool_call_id", f"call_{i}"))
-        tool_messages.append(ToolMessage(content=r["result"], tool_call_id=tid))
-
-    elapsed = (time.perf_counter() - t0) * 1000
-    _timing("Tools", elapsed)
-    return {
-        "messages": messages + tool_messages,
-        "tool_results": results,
-    }
-
-
-def _is_valid_time_output(result: str) -> bool:
-    """Verify time output: numeric HH:MM, recent format, timezone/UTC."""
-    import re
-    if not result or len(result) < 5:
-        return False
-    # Must have HH:MM or H:MM pattern
-    if not re.search(r"\d{1,2}:\d{2}", result):
-        return False
-    # Must have AM/PM or timezone/UTC
-    if not (re.search(r"\b(AM|PM)\b", result, re.I) or "UTC" in result.upper() or "from web" in result):
-        return False
-    return True
-
-
-def time_validator_node(state: dict, tool_router: Any) -> dict:
-    """Critic: Verify time output. If suspicious (truncated, missing digits), re-call once.
-    If still bad -> witty error for reflector."""
-    from langchain_core.messages import ToolMessage
-
-    results = state.get("tool_results", [])
-    messages = state.get("messages", [])
-
-    time_indices = [i for i, r in enumerate(results) if r.get("tool") == "get_current_time"]
-    if not time_indices:
-        return state
-
-    updated_results = list(results)
-    updated_messages = list(messages)
-    tool_msg_start = len(messages) - len(results) if len(messages) >= len(results) else 0
-
-    for idx in time_indices:
-        r = updated_results[idx]
-        content = r.get("result", "")
-        if not _is_valid_time_output(content):
-            args = r.get("args", {})
-            location = args.get("location", "")
-            # Re-call once with same location
-            new_result = tool_router.execute("get_current_time", location=location or "")
-            if _is_valid_time_output(new_result):
-                updated_results[idx] = {"tool": "get_current_time", "result": new_result, "args": args}
-                msg_idx = tool_msg_start + idx
-                if 0 <= msg_idx < len(updated_messages) and isinstance(updated_messages[msg_idx], ToolMessage):
-                    updated_messages[msg_idx] = ToolMessage(
-                        content=new_result, tool_call_id=updated_messages[msg_idx].tool_call_id
-                    )
+class ToolNode(Node):
+    async def process(self, state: SessionState) -> Optional[str]:
+        user_input = state.current_input.lower() if state.current_input else ""
+        response = ""
+        # Computer control
+        if any(word in user_input for word in ['open', 'launch', 'start']):
+            app = self._extract_app(user_input)
+            if app:
+                ok, msg = launch_app(app)
+                response = msg
+        elif 'screenshot' in user_input:
+            ok, data = take_screenshot()
+            if ok:
+                response = "Screenshot taken."
             else:
-                # Still bad - inject witty error for reflector
-                err_msg = "My apologies, Sir — my internal clock seems to be on holiday again."
-                updated_results[idx] = {"tool": "get_current_time", "result": err_msg, "args": args}
-                msg_idx = tool_msg_start + idx
-                if 0 <= msg_idx < len(updated_messages) and isinstance(updated_messages[msg_idx], ToolMessage):
-                    updated_messages[msg_idx] = ToolMessage(
-                        content=err_msg, tool_call_id=updated_messages[msg_idx].tool_call_id
-                    )
-
-    return {
-        "messages": updated_messages,
-        "tool_results": updated_results,
-    }
-
-
-def reflector_node(
-    state: dict,
-    model: str,
-    base_url: str,
-    system_prompt: str,
-    memory: Optional[Any] = None,
-    llm_config: Optional[dict] = None,
-) -> dict:
-    """Formats final response with Paul Bettany personality. Streams if stream_callback in config."""
-    from langchain_core.messages import AIMessage, SystemMessage
-
-    llm_cfg = llm_config or {}
-    t0 = time.perf_counter()
-    llm = _get_llm(
-        model,
-        base_url,
-        temperature=llm_cfg.get("reflector_temperature", 0.5),
-        num_predict=llm_cfg.get("max_tokens", 256),
-        num_ctx=llm_cfg.get("num_ctx_reflector", 4096),
-        llm_config=llm_cfg,
-    )
-    messages = state.get("messages", [])
-
-    if not messages:
-        return state
-
-    # Get last user query for memory context
-    last_content = ""
-    for m in reversed(messages):
-        if hasattr(m, "content") and m.content:
-            last_content = m.content if isinstance(m.content, str) else str(m.content)
-            break
-    mem_ctx = _get_memory_context(memory, last_content or "general")
-    # Personality reminder: Paul Bettany JARVIS - dry British wit, address as Sir
-    personality_reminder = "CRITICAL: Stay in character. Paul Bettany JARVIS. Dry British wit. Address as Sir."
-    system = SystemMessage(content=personality_reminder + "\n\n" + system_prompt + mem_ctx)
-    trimmed = _trim_messages(messages, max_turns=llm_cfg.get("context_window", 10))
-    msgs = [system] + list(trimmed)
-    stream_cb = _stream_callback.get()
-
-    try:
-        if stream_cb:
-            chunks = []
-            for chunk in llm.stream(msgs):
-                if hasattr(chunk, "content") and chunk.content:
-                    chunks.append(chunk.content)
-                    stream_cb(chunk.content)
-            content = "".join(chunks)
-            response = AIMessage(content=content)
+                response = data
+        elif 'status' in user_input or 'system status' in user_input:
+            summary = get_system_summary()
+            response = summary
         else:
-            response = llm.invoke(msgs)
-            content = response.content if hasattr(response, "content") else str(response)
-        elapsed = (time.perf_counter() - t0) * 1000
-        _timing("Reflector", elapsed)
-        return {
-            "messages": list(messages) + [response],
-            "final_response": content,
+            return None
+        state.conversation_history.append({"role": "tool", "content": response})
+        return response
+    
+    def _extract_app(self, text: str) -> Optional[str]:
+        text = text.replace('open', '').replace('launch', '').replace('start', '').strip()
+        common = {
+            'calculator': 'calc.exe' if os.name=='nt' else 'gnome-calculator',
+            'notepad': 'notepad.exe',
+            'browser': 'firefox' if os.name!='nt' else 'firefox.exe'
         }
-    except Exception as e:
-        return {
-            "messages": messages,
-            "final_response": f"I apologise, Sir. An error occurred: {e}",
-        }
+        return common.get(text, text)
 
-
-def heartbeat_node(
-    state: dict,
-    memory: Any,
-    model: str,
-    base_url: str,
-    tts_callback: Optional[callable] = None,
-    llm_config: Optional[dict] = None,
-) -> dict:
-    """Check memory for pending tasks/reminders, execute, speak witty summary."""
-    # Get pending tasks and reminders
-    pending = getattr(memory, "get_pending_tasks", lambda: [])()
-    reminders = getattr(memory, "get_reminders", lambda: [])()
-
-    if not pending and not reminders:
-        return state
-
-    # Build summary for LLM
-    summary_parts = []
-    if pending:
-        summary_parts.append(f"Pending tasks: {len(pending)}")
-    if reminders:
-        summary_parts.append(f"Reminders: {len(reminders)}")
-
-    from langchain_core.messages import HumanMessage, SystemMessage
-    llm = _get_llm(model, base_url, llm_config=llm_config or {})
-    prompt = f"Sir has the following: {'; '.join(summary_parts)}. Provide a brief, witty one-sentence summary to speak aloud. Stay in character as JARVIS."
-    try:
-        response = llm.invoke([SystemMessage(content="You are JARVIS. Brief, dry wit. Address user as Sir."), HumanMessage(content=prompt)])
-        text = response.content if hasattr(response, "content") else str(response)
-        if tts_callback and text:
-            tts_callback(text)
-    except Exception:
-        pass
-    return state
-
-
-def self_improve_node(
-    state: dict,
-    model: str,
-    base_url: str,
-    skills_manager: Any,
-) -> dict:
-    """Qwen3: Handles learn_new_skill - search, write tool, test, register."""
-    # Delegated to skills_manager when learn_new_skill tool is invoked
-    return state
+class OutputNode(Node):
+    async def process(self, state: SessionState) -> str:
+        color_print('info', state.last_response or "(no response)")
+        if state.config.get('print_timers', True):
+            for timer_name, elapsed in state.timers.items():
+                color_print('info', f"[Timer] {timer_name}: {elapsed:.2f}s")
+        return ""

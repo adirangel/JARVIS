@@ -1,5 +1,11 @@
-# JARVIS v0.1 - Dev branch
-# =========================
+# API keys and secrets
+api_key.txt
+openai_api_key.txt
+*.key
+.env
+.env.local
+.env.*
+*.pyd
 
 # Python
 __pycache__/
@@ -23,30 +29,31 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual env
+# Virtual environment
 .venv/
 venv/
 ENV/
 env/
 
-# Data & runtime (user-specific, may contain conversation history)
+# Data & runtime (user-specific)
 data/
 *.db
 *.db-wal
 *.db-shm
+memory/
+.a0proj/
+_backup/
+chroma_data/
+*.faiss
+*.pkl
 
 # Recordings (debug)
 last_recording.wav
 test_recording.wav
 *.wav
 
-# Local config (user-specific paths, device IDs)
+# Local config
 config.local.yaml
-.env
-.env.*
-
-# Backups (do not deploy)
-_backup/
 
 # IDE & tools
 .cursor/
@@ -54,11 +61,28 @@ _backup/
 .vscode/
 *.swp
 *.swo
-.cursorrules
+*~
+.project
+.pydevproject
+.settings/
+
 # Logs
-*.log
+log/
 logs/
+*.log
+tmp/
+temp/
+*.tmp
 
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/

@@ -1,160 +1,112 @@
-"""Wake word detection using openwakeword.
-
-"Hey Jarvis" (English) - hey_jarvis_v0.1
-"""
-
-from __future__ import annotations
-
-import queue
 import threading
-from typing import Callable, Optional
+import time
+import queue
+import wave
+import tempfile
+import os
+from agent.utils import color_print
 
 try:
-    import openwakeword
-    from openwakeword.model import Model
-    OPENWAKEWORD_AVAILABLE = True
+    import audio_to_text
+    HAS_AUDIO_TO_TEXT = True
 except ImportError:
-    OPENWAKEWORD_AVAILABLE = False
-    Model = None
+    HAS_AUDIO_TO_TEXT = False
 
-
-class WakeWordDetector:
-    """Detect 'Hey Jarvis' via openwakeword.
-
-    Issue 1 fix: Higher confidence threshold (0.7-0.85) + noise gate to reduce
-    false positives from background noise.
-    """
-
-    def __init__(
-        self,
-        model_names: Optional[list[str]] = None,
-        threshold: float = 0.75,
-        device: Optional[int] = None,
-        wake_confidence: Optional[float] = None,
-        noise_gate_rms: Optional[float] = None,
-    ):
-        if not OPENWAKEWORD_AVAILABLE:
-            raise ImportError("openwakeword required. pip install openwakeword")
-        self._model_names = model_names or ["hey_jarvis_v0.1"]
-        # Prefer wake_confidence (0.7-0.85) over legacy threshold for fewer false positives
-        base = wake_confidence if wake_confidence is not None else threshold
-        self._threshold = max(0.0, min(float(base), 1.0))
-        self._device = device
-        self._model = None
-        # Noise gate: skip prediction if chunk RMS below this (reduces false triggers)
-        self._noise_gate_rms = noise_gate_rms if noise_gate_rms is not None else 0.0
-
-    def _ensure_model(self) -> None:
-        if self._model is None:
-            try:
-                openwakeword.utils.download_models()
-            except Exception:
-                pass
-            self._model = Model(
-                wakeword_models=self._model_names,
-                inference_framework="onnx",
-            )
-
-    def _chunk_has_speech(self, audio_chunk: bytes) -> bool:
-        """Noise gate: return False if chunk is too quiet (likely background hiss)."""
-        if self._noise_gate_rms <= 0:
-            return True
-        import numpy as np
-        arr = np.frombuffer(audio_chunk, dtype=np.int16)
-        rms = np.sqrt(np.mean(arr.astype(np.float64) ** 2)) / 32768
-        return rms >= self._noise_gate_rms
-
-    def predict(self, audio_chunk: bytes) -> dict:
-        """Return prediction scores for each wake word."""
-        self._ensure_model()
-        import numpy as np
-        arr = np.frombuffer(audio_chunk, dtype=np.int16)
-        return self._model.predict(arr)
-
-    def detect(self, audio_chunk: bytes) -> bool:
-        """True if wake word detected above threshold."""
-        if not self._chunk_has_speech(audio_chunk):
-            return False
-        preds = self.predict(audio_chunk)
-        for scores in preds.values():
-            if hasattr(scores, "__iter__") and scores:
-                s = max(scores) if isinstance(scores, (list, tuple)) else scores[-1]
-                if s >= self._threshold:
-                    return True
-            elif isinstance(scores, (int, float)) and scores >= self._threshold:
-                return True
-        return False
-
-    def listen(
-        self,
-        on_detected: Callable[[], None],
-        sample_rate: int = 16000,
-        chunk_frames: int = 1280,
-        verbose: bool = False,
-        show_scores: bool = False,
-    ) -> None:
-        """Listen for wake word. chunk_frames=1280 (80ms) recommended by openwakeword.
-        Uses a queue so the audio callback stays non-blocking (sounddevice requirement).
-        show_scores: print max score every ~4s for debugging.
-        """
+class WakeListener:
+    def __init__(self, config=None, wake_word="Hey Jarvis", debounce_seconds=1.5, on_detected=None, verbose=False):
+        if isinstance(config, dict):
+            self.wake_word = config.get("wake_word", "Hey Jarvis").lower()
+            self.debounce = config.get("debounce_seconds", 1.5)
+            self.verbose = config.get("wake_verbose", False)
+            self.api_key = config.get("stt_api_key") or config.get("llm_api_key")
+        else:
+            self.wake_word = wake_word.lower()
+            self.debounce = debounce_seconds
+            self.verbose = verbose
+            self.api_key = None
+        self.on_detected = on_detected
+        self._running = False
+        self._thread = None
+        self._last_trigger = 0
+        self.audio_queue = queue.Queue()
+    
+    def start(self, callback=None):
+        if callback is not None:
+            self.on_detected = callback
+        self._running = True
+        self._thread = threading.Thread(target=self._listen_loop, daemon=True)
+        self._thread.start()
+        threading.Thread(target=self._transcribe_loop, daemon=True).start()
+    
+    def stop(self):
+        self._running = False
+        if self._thread:
+            self._thread.join()
+    
+    def _listen_loop(self):
         try:
-            import sounddevice as sd
-        except ImportError:
-            raise ImportError("sounddevice required. pip install sounddevice")
-
-        self._ensure_model()
-        chunk_queue: queue.Queue[bytes] = queue.Queue(maxsize=64)
-
-        def callback(indata, frames, time_info, status):
-            if status:
-                return
-            mono = indata[:, 0] if indata.ndim > 1 else indata
-            chunk = mono.astype("int16").tobytes()
-            try:
-                chunk_queue.put_nowait(chunk)
-            except queue.Full:
-                pass
-
-        def worker():
-            chunk_count = 0
-            max_score = 0.0
-            while True:
+            import pyaudio
+            p = pyaudio.PyAudio()
+            stream = p.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True, frames_per_buffer=3200)
+            while self._running:
                 try:
-                    chunk = chunk_queue.get(timeout=0.5)
-                    # Noise gate: skip prediction on very quiet chunks (reduces false positives)
-                    if not self._chunk_has_speech(chunk):
-                        continue
-                    preds = self.predict(chunk)
-                    for scores in preds.values():
-                        s = float(scores) if not hasattr(scores, "__iter__") else (max(scores) if scores else 0)
-                        max_score = max(max_score, s)
-                        if s >= self._threshold:
-                            if verbose:
-                                print("[Wake word detected]", flush=True)
-                            on_detected()
-                            max_score = 0.0
-                    chunk_count += 1
-                    if show_scores and chunk_count >= 50:
-                        chunk_count = 0
-                        print(f"[Wake] score={max_score:.3f} (threshold={self._threshold})", flush=True)
-                        max_score = 0.0
-                except queue.Empty:
+                    data = stream.read(3200, exception_on_overflow=False)
+                    self.audio_queue.put(data)
+                except Exception:
+                    pass
+            stream.stop_stream()
+            stream.close()
+            p.terminate()
+        except Exception as e:
+            color_print('error', f"WakeListener audio error: {e}")
+    
+    def _transcribe_loop(self):
+        while self._running or not self.audio_queue.empty():
+            try:
+                frames = []
+                # collect ~2 seconds of audio
+                for _ in range(10):
+                    try:
+                        frames.append(self.audio_queue.get(timeout=0.5))
+                    except queue.Empty:
+                        break
+                if len(frames) < 5:
                     continue
-
-        worker_thread = threading.Thread(target=worker, daemon=True)
-        worker_thread.start()
-
-        kwargs = dict(
-            samplerate=sample_rate,
-            channels=1,
-            dtype="int16",
-            blocksize=chunk_frames,
-            callback=callback,
-        )
-        if self._device is not None:
-            kwargs["device"] = self._device
-
-        with sd.InputStream(**kwargs):
-            import time
-            while True:
-                time.sleep(0.1)
+                # write temp wav
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
+                    wf = wave.open(f, 'wb')
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(16000)
+                    wf.writeframes(b''.join(frames))
+                    wf.close()
+                    temp_path = f.name
+                if HAS_AUDIO_TO_TEXT:
+                    try:
+                        transcript = audio_to_text.transcribe(temp_path, self.api_key or "")
+                    except Exception:
+                        transcript = ""
+                    finally:
+                        try:
+                            os.unlink(temp_path)
+                        except:
+                            pass
+                else:
+                    transcript = ""
+                if transcript and self.wake_word in transcript.lower():
+                    now = time.time()
+                    if now - self._last_trigger < self.debounce:
+                        if self.verbose:
+                            color_print('warn', f"Debounced wake trigger ({(now-self._last_trigger):.2f}s)")
+                        continue
+                    self._last_trigger = now
+                    if self.verbose:
+                        color_print('thought', f"Wake word detected: {transcript}")
+                    # fire the callback (may be async or sync)
+                    try:
+                        if self.on_detected:
+                            self.on_detected(transcript)
+                    except Exception as e:
+                        color_print('error', f"Wake callback error: {e}")
+            except Exception as e:
+                color_print('error', f"Transcribe loop error: {e}")

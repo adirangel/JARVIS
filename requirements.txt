@@ -1,42 +1,21 @@
-# JARVIS - 100% Local AI Assistant
-# Single model: qwen3:4b for all tasks
-
-# LangGraph & LLM
-langgraph>=0.2.0
-langgraph-checkpoint-sqlite
-langchain-ollama>=0.2.0
-langchain-openai>=0.2.0
-langchain-core>=0.3.0
-
-# Voice
-faster-whisper
-piper-tts
-huggingface_hub
-openwakeword
-sounddevice
-soundfile
-numpy
-webrtcvad-wheels
-
-# System tray & scheduling
-pystray
-Pillow
-apscheduler
-
-# Web & search
-ddgs
-beautifulsoup4
-playwright
-
-# Computer control
+# JARVIS - Voice mode (hotfix/upgrade-architecture)
+aiohttp>=3.9
+openai>=1.0
+pyaudio
 pyautogui
-
-# Memory
+pynput
+keyboard
+mouse
+sentence-transformers
 chromadb
-ollama
-
-# Config & utils
+piper-tts
+edge-tts
+numpy
+pandas
+loguru
 PyYAML
-python-dotenv
-python-bidi
-pytz
+torch
+soundfile
+librosa
+psutil
+pydub
