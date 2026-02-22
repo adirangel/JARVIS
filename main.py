@@ -219,6 +219,7 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
     from voice.validation import has_voice_activity, is_valid_transcript
 
     verbose = console_mode or "--mode" in sys.argv
+    debug_stats = {"turns": 0, "total_llm_ms": 0.0, "total_tts_ms": 0.0, "wake_count": 0}
     if verbose:
         print("Loading memory...", flush=True)
     memory = create_memory(config)
@@ -471,28 +472,17 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                     config=config,
                     memory=memory,
                 )
-                # Accumulate full response text and measure LLM latency
-                response_text = ""
-                for chunk in response: response_text += chunk.content
                 t1 = time.perf_counter()
-                llm_ms = (t1 - t0)*1000
+                llm_ms = (t1 - t0) * 1000
                 debug_stats["total_llm_ms"] += llm_ms
-                if announce_thinking: print("[Thought] " + response_text)
-                print(f"[Timers] LLM: {llm_ms:.0f}ms")
-                t_ts0 = time.perf_counter()
+                if announce_thinking and response:
+                    print("[Thought] " + response, flush=True)
+                if show_timing:
+                    print(f"[Timers] LLM: {llm_ms:.0f}ms", flush=True)
                 put_remainder(flush())
             finally:
                 stop_consumer()
                 consumer_thread.join(timeout=30)
-                # Accumulate full response text and measure LLM latency
-                response_text = ""
-                for chunk in response: response_text += chunk.content
-                t1 = time.perf_counter()
-                llm_ms = (t1 - t0)*1000
-                debug_stats["total_llm_ms"] += llm_ms
-                if announce_thinking: print("[Thought] " + response_text)
-                print(f"[Timers] LLM: {llm_ms:.0f}ms")
-                t_ts0 = time.perf_counter()
         else:
             response, latency = invoke_jarvis(
                 graph,
@@ -660,6 +650,37 @@ def run_jarvis_loop(config: dict, stop_event: threading.Event, console_mode: boo
                 break
 
 
+def run_text_only_loop(config: dict, stop_event: threading.Event) -> None:
+    """Text-only mode: no TTS, STT, wake word, or recorder. Pure terminal chat."""
+    from agent.graph import create_jarvis_graph, invoke_jarvis
+
+    print("Loading memory...", flush=True)
+    memory = create_memory(config)
+    print("Loading agent graph...", flush=True)
+    graph = create_jarvis_graph(config, memory=memory)
+    vc = config.get("voice", {})
+    max_words = vc.get("max_response_words", 0) or 0
+
+    print("JARVIS text mode. Type your message and press Enter. Ctrl+C to quit.", flush=True)
+    while not stop_event.is_set():
+        try:
+            text = input("You: ").strip()
+            if not text:
+                continue
+            response, _ = invoke_jarvis(
+                graph,
+                text,
+                stream_callback=None,
+                max_words=max_words,
+                config=config,
+                memory=memory,
+            )
+            memory.save_interaction(text, response)
+            print("JARVIS:", _display_text(response), flush=True)
+        except (EOFError, KeyboardInterrupt):
+            break
+
+
 def create_tray_icon(config: dict):
     """System tray with pystray."""
     import pystray
@@ -702,10 +723,15 @@ def create_tray_icon(config: dict):
 
 def main():
     config = load_config()
-    speech_lock = threading.Lock()
-    debug_stats = dict(turns=0, total_llm_ms=0.0, total_tts_ms=0.0, wake_count=0)
 
-    # Console mode: text input, no tray.
+    # Text-only mode: no voice at all (no TTS, STT, wake word). Fast startup.
+    if "--text" in sys.argv or "-t" in sys.argv:
+        print("JARVIS text mode. No voice components loaded.", flush=True)
+        stop_event = threading.Event()
+        run_text_only_loop(config, stop_event)
+        return
+
+    # Console mode: text input, but still loads TTS/STT (for optional voice).
     if "--console" in sys.argv or "-c" in sys.argv:
         print("JARVIS console mode. Type your message and press Enter. Ctrl+C to quit.")
         stop_event = threading.Event()
