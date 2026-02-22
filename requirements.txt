@@ -1,3 +1,4 @@
+# JARVIS - Voice mode (hotfix/upgrade-architecture)
 aiohttp>=3.9
 openai>=1.0
 pyaudio

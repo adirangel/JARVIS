@@ -26,7 +26,7 @@ class InputNode(Node):
         if not audio_file:
             state.current_input = "Hey Jarvis, what's the time?"  # test fallback
             return state.current_input
-        api_key = state.config.get('llm_api_key')
+        api_key = state.config.get('stt_api_key') or state.config.get('llm_api_key')
         text = transcribe(audio_file, api_key)
         color_print('info', f"User said: {text}")
         state.conversation_history.append({"role": "user", "content": text})
@@ -93,9 +93,12 @@ class ReflectorNode(Node):
     async def _stream_response(self, messages: List[Dict[str, str]]):
         try:
             from openai import OpenAI
-            client = OpenAI(api_key=self.api_key, base_url="https://api.stepfun.com/v1")
+            base_url = self.config.get('llm_base_url')
+            if not base_url:
+                base_url = "https://api.stepfun.com/v1" if self.provider == "stepfun" else "https://openrouter.ai/api/v1"
+            client = OpenAI(api_key=self.api_key, base_url=base_url)
             stream = client.chat.completions.create(
-                model=self.config.get('llm_model', 'step-3.5-flash'),
+                model=self.config.get('llm_model', 'openai/gpt-4o-mini'),
                 messages=messages,
                 temperature=self.config.get('llm_temperature', 0.8),
                 max_tokens=self.max_tokens,

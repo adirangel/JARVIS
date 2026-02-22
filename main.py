@@ -29,13 +29,20 @@ from text_to_speech import TTS
 def load_config():
     with open('config/settings.yaml', 'r') as f:
         cfg = yaml.safe_load(f)
-    # Load API key if file exists
+    # Load LLM API key (OpenRouter, Stepfun, etc.)
     key_file = cfg.get('llm_api_key_file', 'api_key.txt')
     if os.path.exists(key_file):
         with open(key_file, 'r') as f:
             cfg['llm_api_key'] = f.read().strip()
     else:
         cfg['llm_api_key'] = None
+    # Load STT API key (Whisper needs OpenAI key; falls back to llm_api_key)
+    stt_key_file = cfg.get('stt_api_key_file', key_file)
+    if os.path.exists(stt_key_file):
+        with open(stt_key_file, 'r') as f:
+            cfg['stt_api_key'] = f.read().strip()
+    else:
+        cfg['stt_api_key'] = cfg.get('llm_api_key')
     return cfg
 
 async def initialize_agent(config):

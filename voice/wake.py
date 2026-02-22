@@ -18,7 +18,7 @@ class WakeListener:
             self.wake_word = config.get("wake_word", "Hey Jarvis").lower()
             self.debounce = config.get("debounce_seconds", 1.5)
             self.verbose = config.get("wake_verbose", False)
-            self.api_key = config.get("llm_api_key")
+            self.api_key = config.get("stt_api_key") or config.get("llm_api_key")
         else:
             self.wake_word = wake_word.lower()
             self.debounce = debounce_seconds

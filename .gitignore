@@ -4,8 +4,9 @@ openai_api_key.txt
 *.key
 .env
 .env.local
-.env.*.local
+.env.*
 *.pyd
+
 # Python
 __pycache__/
 *.py[cod]
@@ -34,7 +35,28 @@ venv/
 ENV/
 env/
 
-# IDE and editors
+# Data & runtime (user-specific)
+data/
+*.db
+*.db-wal
+*.db-shm
+memory/
+.a0proj/
+_backup/
+chroma_data/
+*.faiss
+*.pkl
+
+# Recordings (debug)
+last_recording.wav
+test_recording.wav
+*.wav
+
+# Local config
+config.local.yaml
+
+# IDE & tools
+.cursor/
 .idea/
 .vscode/
 *.swp
@@ -44,23 +66,13 @@ env/
 .pydevproject
 .settings/
 
-# Logs and temp
+# Logs
 log/
+logs/
 *.log
 tmp/
 temp/
 *.tmp
-
-# Project-specific data and cache
-memory/
-data/
-.a0proj/
-_backup/
-
-# ChromaDB / embeddings
-chroma_data/
-*.faiss
-*.pkl
 
 # OS
 .DS_Store
