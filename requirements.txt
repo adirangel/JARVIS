@@ -19,3 +19,4 @@ soundfile
 librosa
 psutil
 pydub
+pyaudio

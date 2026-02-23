@@ -3,8 +3,8 @@ debounce_seconds: 1.5
 wake_verbose: true
 stt_engine: "google"
 stt_timeout: 5
-llm_provider: "stepfun"
-llm_model: "step-3.5-flash"
+llm_provider: "openrouter"
+llm_model: "stepfun/step-3.5-flash:free"
 llm_api_key_file: "api_key.txt"
 llm_temperature: 0.8
 llm_max_tokens: 500
@@ -32,3 +32,5 @@ max_conversation_turns: 15
 session_idle_timeout_seconds: 300
 proactive_insights: true
 proactive_interval_minutes: 10
+llm_mock: false
+llm_base_url: "https://openrouter.ai/api/v1"
