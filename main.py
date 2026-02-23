@@ -86,10 +86,9 @@ async def handle_wake(transcript: str, session: SessionState, graph: AgentGraph,
     # Debounce handled by WakeListener
     if session.speech_lock.locked():
         color_print('warn', "[Wake] Already speaking, interrupting...")
-        session.stopped.set()  # Signal nodes to stop
-        await asyncio.sleep(0.1)
-        session.stopped.clear()
+        session.stopped.set()  # Signal TTS/agent to stop (do NOT clear - let running task see it)
     async with session.speech_lock:
+        session.stopped.clear()  # Clear when we start our turn
         session.metadata['audio_file'] = None  # will be captured by InputNode from STT streaming
         session.current_input = transcript
         session.conversation_history.append({"role": "user", "content": transcript})
@@ -98,8 +97,14 @@ async def handle_wake(transcript: str, session: SessionState, graph: AgentGraph,
             async for result in graph.run(session, max_turns=config.get('max_conversation_turns', 15)):
                 # result from each node; output_node prints
                 pass
+        except asyncio.TimeoutError:
+            color_print('error', "Agent error: LLM response timed out (30s)")
         except Exception as e:
-            color_print('error', f"Agent error: {e}")
+            import traceback
+            err_msg = str(e) or type(e).__name__
+            color_print('error', f"Agent error: {err_msg}")
+            if config.get('debug', False):
+                traceback.print_exc()
         finally:
             # After response done, release lock after audio finishes? TTS finalize handles
             pass
@@ -157,11 +162,14 @@ async def main():
     session, graph = await initialize_agent(config)
     
     if args.mode == "voice":
-        # Wake listener
+        # Wake listener (callback runs in worker thread - must schedule on main loop)
         wake = WakeListener(config)
-        # Define callback that triggers agent
+        dev = config.get("input_device") or config.get("wake_device")
+        dev_info = f" device={dev}" if dev is not None else " (default mic)"
+        logger.info(f"Wake listener using{dev_info}. Say 'Hey Jarvis' once, then talk freely. 10 min silence = re-wake.")
+        loop = asyncio.get_running_loop()
         def on_wake(transcript: str):
-            asyncio.create_task(handle_wake(transcript, session, graph, wake))
+            asyncio.run_coroutine_threadsafe(handle_wake(transcript, session, graph, wake), loop)
         wake.start(callback=on_wake)
         logger.info("JARVIS is listening for wake word...")
         try:

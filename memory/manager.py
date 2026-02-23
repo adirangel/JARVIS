@@ -99,6 +99,15 @@ class MemoryManager:
     def get_all_facts(self, category: Optional[str] = None) -> list[dict]:
         return self._sqlite.get_facts(category)
 
+    def retrieve_similar(self, query: str, max_results: int = 5) -> list[dict]:
+        """Return semantically similar past interactions. For LongTermMemory.retrieve()."""
+        if not self._vector_store or self._vector_store.count() == 0:
+            return []
+        try:
+            return self._vector_store.search_similar(query, max_results=max_results)
+        except Exception:
+            return []
+
     def build_context(self, query: str) -> str:
         parts = []
         facts = self._sqlite.get_facts()

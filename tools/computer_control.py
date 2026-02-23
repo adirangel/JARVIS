@@ -29,22 +29,20 @@ except ImportError:
     HAS_PIL = False
 
 def launch_app(path: str) -> Tuple[bool, str]:
-    """Launch an application given its path or command."""
-    if not os.path.exists(path):
-        try:
-            subprocess.Popen([path])
+    """Launch an application. On Windows, use shell=True for PATH lookup (calc.exe, etc.)."""
+    path = (path or "").strip()
+    if not path:
+        return False, "No application specified"
+    try:
+        if platform.system() == "Windows":
+            # Use shell=True so calc.exe, notepad.exe etc. are found in PATH
+            subprocess.Popen(path, shell=True)
             return True, f"Launched {path}"
-        except Exception as e:
-            return False, f"Failed to launch: {e}"
-    else:
-        try:
-            if platform.system() == "Windows":
-                os.startfile(path)
-            else:
-                subprocess.Popen([path])
-            return True, f"Opened {path}"
-        except Exception as e:
-            return False, f"Error opening: {e}"
+        else:
+            subprocess.Popen([path], shell=True)
+            return True, f"Launched {path}"
+    except Exception as e:
+        return False, f"Failed to launch: {e}"
 
 def click_at(x: int, y: int, button: str = "left") -> Tuple[bool, str]:
     """Move mouse to (x,y) and click."""

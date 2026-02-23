@@ -17,6 +17,8 @@ PyYAML
 torch
 soundfile
 librosa
+faster-whisper
 psutil
 pydub
 pyaudio
+sounddevice

@@ -73,7 +73,9 @@ class ReflectorNode(Node):
         color_print('thought', 'ReflectorNode: Thinking...')
         full_response = ""
         try:
-            async for chunk in self._stream_response(messages):
+            async for chunk in self._stream_response(messages, state):
+                if getattr(state, "stopped", None) and state.stopped.is_set():
+                    break
                 full_response += chunk
                 if self.streaming and self.tts:
                     await self.tts.stream_chunk(chunk)
@@ -83,9 +85,9 @@ class ReflectorNode(Node):
         except Exception as e:
             color_print('error', f"ReflectorNode: {e}")
             full_response = "I encountered an error, sir."
-        # Finalize speech
+        # Finalize speech (interruptible via state.stopped)
         if self.tts:
-            await self.tts.finalize()
+            await self.tts.finalize(state)
         # Record
         state.conversation_history.append({"role": "assistant", "content": full_response})
         state.short_term_memory.add("assistant", full_response)
@@ -93,7 +95,7 @@ class ReflectorNode(Node):
         self._store_important_info(user_input, full_response, state)
         return full_response
     
-    async def _stream_response(self, messages: List[Dict[str, str]]):
+    async def _stream_response(self, messages: List[Dict[str, str]], state=None):
         try:
             from openai import OpenAI
             base_url = self.config.get('llm_base_url')
@@ -108,6 +110,8 @@ class ReflectorNode(Node):
                 stream=True
             )
             for chunk in stream:
+                if getattr(state, "stopped", None) and state.stopped.is_set():
+                    break
                 if chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
         except Exception as e:
@@ -152,13 +156,20 @@ class ToolNode(Node):
         return response
     
     def _extract_app(self, text: str) -> Optional[str]:
-        text = text.replace('open', '').replace('launch', '').replace('start', '').strip()
+        t = text.replace('open', '').replace('launch', '').replace('start', '').replace('my', '').replace('please', '').strip()
+        t = t.strip(' ,.!?').lower()
+        # First word often is the app (e.g. "calculator please" -> "calculator")
+        first = t.split()[0] if t.split() else t
         common = {
-            'calculator': 'calc.exe' if os.name=='nt' else 'gnome-calculator',
+            'calculator': 'calc.exe' if os.name == 'nt' else 'gnome-calculator',
+            'calc': 'calc.exe' if os.name == 'nt' else 'gnome-calculator',
             'notepad': 'notepad.exe',
-            'browser': 'firefox' if os.name!='nt' else 'firefox.exe'
+            'browser': 'firefox.exe' if os.name == 'nt' else 'firefox',
+            'clock': 'start ms-clock:' if os.name == 'nt' else 'gnome-clocks',
+            'explorer': 'explorer.exe' if os.name == 'nt' else 'nautilus',
+            'file': 'explorer.exe' if os.name == 'nt' else 'nautilus',
         }
-        return common.get(text, text)
+        return common.get(t, common.get(first, t or text))
 
 class OutputNode(Node):
     async def process(self, state: SessionState) -> str:
