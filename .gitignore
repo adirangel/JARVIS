@@ -1,0 +1,64 @@
+# JARVIS v0.1 - Dev branch
+# =========================
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual env
+.venv/
+venv/
+ENV/
+env/
+
+# Data & runtime (user-specific, may contain conversation history)
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Recordings (debug)
+last_recording.wav
+test_recording.wav
+*.wav
+
+# Local config (user-specific paths, device IDs)
+config.local.yaml
+.env
+.env.*
+
+# Backups (do not deploy)
+_backup/
+
+# IDE & tools
+.cursor/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db

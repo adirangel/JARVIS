@@ -1,0 +1,107 @@
+# JARVIS Configuration - Copy to config.yaml and customize
+# =========================================================
+
+# Single model: qwen3:4b for ALL tasks (conversation, planning, reflection, tools, self-evolution)
+llm:
+  model: "qwen3:4b"
+  host: "http://localhost:11434"
+  temperature: 0.7
+  max_tokens: 256
+  context_window: 6
+  planner_temperature: 0.5
+  planner_max_tokens: 512
+  reflector_temperature: 0.5
+  num_ctx_planner: 8192
+  num_ctx_reflector: 4096
+  num_ctx_tool: 4096
+
+# Voice loop (continuous session + low latency)
+voice:
+  stt_model: "large-v3-turbo"
+  stt_device: "cuda"
+  stt_language: "en"
+  stt_beam_size: 3
+  stt_compute_type: "int8"
+
+  tts_engine: "piper"
+  tts_quality: "medium"
+  tts_speed: 1.0
+  preload_tts: true
+  stream_tts: true
+  max_response_words: 0   # 0 = no truncation
+
+  min_rms: 0.0010
+  min_audio_length: 1.0
+  min_transcript_words: 3
+  use_vad: true
+  vad_aggressiveness: 2
+  vad_min_speech_ratio: 0.08
+
+  recorder_sample_rate: 16000
+  recorder_silence_threshold: 0.012
+  recorder_silence_duration: 2.5
+  speech_start_timeout: 3.5
+  max_record_seconds: 30
+  push_to_talk_seconds: 5
+
+  # Active session behavior
+  silence_timeout: 15
+  session_end_commands: ["goodbye", "stop", "end session", "end conversation"]
+  listening_prompt: "Listening, Sir."
+  wake_ack_prompt: ""
+  session_end_prompt: "Very well, Sir. Standing by."
+  ready_beep: true
+  ready_beep_only: false
+  ready_beep_volume: 0.08
+  ready_beep_seconds: 0.08
+  ready_beep_frequency_hz: 920
+  thinking_prompt: "As you wish, Sir..."
+  thinking_prompt_each_turn: false
+
+# Wake word (openwakeword local inference)
+wake_word:
+  models: ["hey_jarvis_v0.1"]
+  threshold: 0.75
+  wake_confidence: 0.78
+  device: null
+  cooldown_seconds: 3
+  noise_gate_rms: 0.005
+  show_scores: false
+
+# Memory
+memory:
+  db_path: "data/jarvis.db"
+  chroma_path: "data/chroma"
+  embedding_model: "nomic-embed-text"
+  max_memories: 3
+  chroma_cache_recent: true
+  chroma_cache_size: 50
+
+# Search
+ddgs:
+  impersonate: "chrome_145"
+  impersonate_os: "windows"
+
+# Tools
+tools:
+  allowed_directories:
+    - "~"
+  max_search_results: 5
+  command_timeout: 30
+  time_verify: "chrome"
+
+# Heartbeat
+heartbeat:
+  interval_minutes: 30
+
+# General
+debug: false
+log_level: "INFO"
+timing: false
+show_latency: true
+
+# Context size tracking (tokens per session)
+context:
+  max_tokens: 32000
+  warning_threshold: 0.85
+  show_after_each_turn: true
