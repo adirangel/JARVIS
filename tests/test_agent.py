@@ -128,6 +128,6 @@ def test_context_tracking():
     assert get_session_tokens() == 430
     disp, is_warn = get_context_status({"context": {"max_tokens": 256000, "warning_threshold": 0.85}})
     assert "430" in disp
-    assert "32,000" in disp
+    assert "256,000" in disp
     assert is_warn is False
     reset_session_tokens()

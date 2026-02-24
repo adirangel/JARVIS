@@ -22,3 +22,4 @@ class Personality:
             base += "Address the user exclusively as 'Sir'. "
         base += "Be concise and helpful."
         return base
+JARVIS_SYSTEM_PROMPT = Personality({ "use_sir": True }).generate_system_prompt()

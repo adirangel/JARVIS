@@ -195,3 +195,9 @@ if __name__ == "__main__":
     parser.add_argument("--test-text", help="For mode=test, provide the text input.")
     args = parser.parse_args()
     asyncio.run(main())
+def _strip_think_for_tts(text):
+    import re
+    if '<think>' in text and '</think>' not in text:
+        return ''
+    text = re.sub(r'<think>.*?<\/think>', '', text, flags=re.DOTALL)
+    return text.strip() if text.strip() else ""

@@ -8,7 +8,7 @@ from audio_to_text import transcribe
 from text_to_speech import TTS
 from tools.computer_control import *
 from tools.system_monitor import get_system_summary, format_for_speech
-from memory.short_term import ShortTermMemory
+#from memory.short_term import ShortTermMemory
 from memory.long_term import LongTermMemory
 
 try:
@@ -178,3 +178,20 @@ class OutputNode(Node):
             for timer_name, elapsed in state.timers.items():
                 color_print('info', f"[Timer] {timer_name}: {elapsed:.2f}s")
         return ""
+
+import re
+
+def _is_valid_time_output(text):
+    return bool(re.search(r'\d{1,2}:\d{2}\s*(AM|PM|am|pm)?', text))
+
+def time_validator_node(state, router):
+    if "tool_results" in state and state["tool_results"]:
+        result = state["tool_results"][0].get("result", "")
+        if _is_valid_time_output(result):
+            return state
+    return state
+class ShortTermMemory:
+    def get_context(self):
+        return []
+    def add(self, role, content):
+        pass

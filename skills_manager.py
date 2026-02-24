@@ -1,3 +1,4 @@
+
 import ast
 import sys
 from typing import Dict
@@ -29,8 +30,6 @@ ALLOWED_MODULES = [
 User: "Jarvis, learn how to control Spotify"
 -> Qwen3: web search, write Python tool in ./skills/, test, ask approval, register.
 """
-
-from __future__ import annotations
 
 import json
 import os

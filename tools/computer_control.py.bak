@@ -9,7 +9,7 @@ from typing import Tuple, Optional
 
 # Try to import optional dependencies
 try:
-#    import pyautogui
+    import pyautogui
     import pynput
     from pynput import keyboard, mouse
     HAS_PYNPUT = True
@@ -17,7 +17,7 @@ except ImportError:
     HAS_PYNPUT = False
 
 try:
-#    import pyautogui
+    import pyautogui
     HAS_PYAUTOGUI = True
 except ImportError:
     HAS_PYAUTOGUI = False

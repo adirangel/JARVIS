@@ -51,7 +51,7 @@ def get_context_status(config: Optional[dict] = None) -> tuple[str, bool]:
     """Return (display_string, is_warning). Warning when above threshold."""
     cfg = config or {}
     ctx_cfg = cfg.get("context", {})
-    max_tok = int(ctx_cfg.get("max_tokens", 256,000))
+    max_tok = int(ctx_cfg.get("max_tokens", 256000))
     threshold = float(ctx_cfg.get("warning_threshold", 0.85))
     used = get_session_tokens()
     pct = (used / max_tok) if max_tok > 0 else 0.0
