@@ -156,10 +156,15 @@ class ToolNode(Node):
         return response
     
     def _extract_app(self, text: str) -> Optional[str]:
-        t = text.replace('open', '').replace('launch', '').replace('start', '').replace('my', '').replace('please', '').strip()
-        t = t.strip(' ,.!?').lower()
-        # First word often is the app (e.g. "calculator please" -> "calculator")
-        first = t.split()[0] if t.split() else t
+        # Remove common phrases: "can you", "open", "launch", "my", "please", etc.
+        t = text.lower()
+        for phrase in ['can you', 'could you', 'would you', 'open', 'launch', 'start', 'my', 'please', 'the']:
+            t = t.replace(phrase, ' ')
+        t = ' '.join(t.split()).strip(' ,.!?')
+        words = t.split()
+        # Prefer last word (often the app: "open youtube" -> youtube)
+        last = words[-1] if words else t
+        first = words[0] if words else t
         common = {
             'calculator': 'calc.exe' if os.name == 'nt' else 'gnome-calculator',
             'calc': 'calc.exe' if os.name == 'nt' else 'gnome-calculator',
@@ -168,8 +173,9 @@ class ToolNode(Node):
             'clock': 'start ms-clock:' if os.name == 'nt' else 'gnome-clocks',
             'explorer': 'explorer.exe' if os.name == 'nt' else 'nautilus',
             'file': 'explorer.exe' if os.name == 'nt' else 'nautilus',
+            'youtube': 'start https://www.youtube.com' if os.name == 'nt' else 'xdg-open https://www.youtube.com',
         }
-        return common.get(t, common.get(first, t or text))
+        return common.get(t, common.get(last, common.get(first, last or first or text)))
 
 class OutputNode(Node):
     async def process(self, state: SessionState) -> str:

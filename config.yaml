@@ -7,7 +7,7 @@ llm:
   # provider: "ollama" | "openrouter"
   provider: "openrouter"
   model: "stepfun/step-3.5-flash:free"
-  api_key: "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"  # Paste your OpenRouter API key here, or set OPENROUTER_API_KEY env var
+  api_key: ""  # Paste your OpenRouter API key here, or set OPENROUTER_API_KEY env var
   host: "http://localhost:11434"  # Used only when provider=ollama
   temperature: 0.7
   max_tokens: 256

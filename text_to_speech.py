@@ -90,8 +90,10 @@ class TTS:
         import sounddevice as sd
         import soundfile as sf
         data, samplerate = sf.read(path, dtype="float32")
-        stream = sd.play(data, samplerate, blocking=False)
-        while stream.active:
+        sd.play(data, samplerate, blocking=False)  # Returns None - use duration-based wait
+        duration_sec = len(data) / float(samplerate)
+        steps = max(1, int(duration_sec / 0.05))
+        for _ in range(steps):
             if self._is_stopped(state):
                 sd.stop()
                 return
