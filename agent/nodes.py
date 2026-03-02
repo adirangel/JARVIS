@@ -1,6 +1,12 @@
 import asyncio
 import os
+import queue
+import threading
+import time
 from typing import Optional, Dict, Any, List
+
+from loguru import logger
+
 from agent.graph import Node, SessionState
 from agent.utils import DebugTimer, color_print
 from agent.personality import Personality
@@ -8,7 +14,6 @@ from audio_to_text import transcribe
 from text_to_speech import TTS
 from tools.computer_control import *
 from tools.system_monitor import get_system_summary, format_for_speech
-#from memory.short_term import ShortTermMemory
 from memory.long_term import LongTermMemory
 
 try:
@@ -34,6 +39,10 @@ class InputNode(Node):
         return text
 
 class ReflectorNode(Node):
+    # Class-level cache for OpenAI client (reused across all requests)
+    _client_cache: Dict[str, Any] = {}
+    _tts_cache: Dict[str, TTS] = {}
+    
     def __init__(self, name: str = "reflector", config: Optional[Dict[str, Any]] = None):
         super().__init__(name)
         self.config = config or {}
@@ -43,12 +52,45 @@ class ReflectorNode(Node):
         self.streaming = self.config.get('streaming', True)
         self.api_key = self.config.get('llm_api_key')
         self.provider = self.config.get('llm_provider', 'stepfun')
+        self._initialized = False
     
     async def initialize(self):
-        engine = self.config.get('tts_engine')
-        if engine and engine.lower() != 'none' and self.streaming:
+        """Initialize TTS only once, and skip if engine is 'none' or in CLI mode."""
+        if self._initialized:
+            return
+        self._initialized = True
+        engine = self.config.get('tts_engine', '').lower()
+        # Skip TTS if disabled or in CLI-only mode
+        if not engine or engine == 'none':
+            return
+        # Use cached TTS if available
+        cache_key = f"{engine}_{self.config.get('tts_quality', 'medium')}"
+        if cache_key in ReflectorNode._tts_cache:
+            self.tts = ReflectorNode._tts_cache[cache_key]
+            return
+        if self.streaming:
             self.tts = TTS(self.config)
             await self.tts.initialize()
+            ReflectorNode._tts_cache[cache_key] = self.tts
+    
+    def _get_client(self):
+        """Get or create cached OpenAI client for LLM calls."""
+        base_url = self.config.get('llm_base_url')
+        if not base_url:
+            base_url = "https://api.stepfun.com/v1" if self.provider == "stepfun" else "https://openrouter.ai/api/v1"
+        api_key = self.api_key
+        if self.provider == "ollama" or (base_url and "localhost:11434" in base_url):
+            api_key = api_key or "ollama"
+        
+        cache_key = f"{base_url}_{api_key}"
+        if cache_key not in ReflectorNode._client_cache:
+            from openai import OpenAI
+            ReflectorNode._client_cache[cache_key] = OpenAI(
+                api_key=api_key or "ollama",
+                base_url=base_url,
+                timeout=120.0,  # Increase timeout for slow models
+            )
+        return ReflectorNode._client_cache[cache_key]
     
     async def process(self, state: SessionState) -> str:
         await self.initialize()
@@ -68,17 +110,41 @@ class ReflectorNode(Node):
         if memory_context:
             messages.append({"role": "system", "content": f"Relevant memories:\n{memory_context}"})
         messages.extend(recent)
-        messages.append({"role": "user", "content": user_input})
+        
+        # For Qwen models with Ollama, add /no_think to disable extended reasoning
+        model_name = self.config.get('llm_model', '').lower()
+        user_message = user_input
+        is_qwen_ollama = self.provider == "ollama" and "qwen" in model_name
+        if is_qwen_ollama:
+            user_message = f"{user_input} /no_think"
+        if self.config.get('debug'):
+            logger.debug(f"[LLM] Provider={self.provider}, Model={model_name}, Qwen+Ollama={is_qwen_ollama}")
+        messages.append({"role": "user", "content": user_message})
+        
+        # Debug: show what we're sending (file log only)
+        if self.config.get('debug'):
+            total_chars = sum(len(m.get('content', '')) for m in messages)
+            logger.debug(f"[LLM] Sending {len(messages)} messages, {total_chars} chars total")
+        
         # Stream response & TTS
         color_print('thought', 'ReflectorNode: Thinking...')
+        state.streamed_to_console = False
         full_response = ""
         try:
-            async for chunk in self._stream_response(messages, state):
-                if getattr(state, "stopped", None) and state.stopped.is_set():
-                    break
-                full_response += chunk
-                if self.streaming and self.tts:
-                    await self.tts.stream_chunk(chunk)
+            async with DebugTimer(state, "llm_response"):
+                async for chunk in self._stream_response(messages, state):
+                    if getattr(state, "stopped", None) and state.stopped.is_set():
+                        break
+                    full_response += chunk
+                    if self.streaming:
+                        if self.tts:
+                            await self.tts.stream_chunk(chunk, state)
+                        # Stream text to console as chunks arrive
+                        if state.config.get("stream", True):
+                            import sys
+                            sys.stdout.write(chunk)
+                            sys.stdout.flush()
+                            state.streamed_to_console = True
         except asyncio.CancelledError:
             color_print('error', 'ReflectorNode: Interrupted by wake')
             raise
@@ -96,27 +162,123 @@ class ReflectorNode(Node):
         return full_response
     
     async def _stream_response(self, messages: List[Dict[str, str]], state=None):
-        try:
-            from openai import OpenAI
-            base_url = self.config.get('llm_base_url')
-            if not base_url:
-                base_url = "https://api.stepfun.com/v1" if self.provider == "stepfun" else "https://openrouter.ai/api/v1"
-            client = OpenAI(api_key=self.api_key, base_url=base_url)
-            stream = client.chat.completions.create(
-                model=self.config.get('llm_model', 'openai/gpt-4o-mini'),
-                messages=messages,
-                temperature=self.config.get('llm_temperature', 0.8),
-                max_tokens=self.max_tokens,
-                stream=True
-            )
-            for chunk in stream:
+        """Stream LLM response. Uses native Ollama API for speed, OpenAI client for other providers."""
+        t_start = time.perf_counter()
+        base_url = self.config.get('llm_base_url', '')
+        model = self.config.get('llm_model', 'llama3.2:3b')
+        
+        # Use native Ollama for local models (3x faster than OpenAI compatibility layer)
+        if self.provider == "ollama" or (base_url and "localhost:11434" in base_url):
+            async for chunk in self._stream_ollama_native(messages, model, state, t_start):
+                yield chunk
+        else:
+            async for chunk in self._stream_openai_client(messages, model, state, t_start):
+                yield chunk
+    
+    async def _stream_ollama_native(self, messages: List[Dict[str, str]], model: str, state, t_start: float):
+        """Stream using native Ollama API via a background thread so the event loop stays free."""
+        q: queue.Queue = queue.Queue()
+        _DONE = object()
+
+        def _producer():
+            try:
+                import ollama
+                client = ollama.Client(host="http://localhost:11434")
+                logger.debug(f"[Timing] Ollama client ready: {(time.perf_counter() - t_start)*1000:.0f}ms")
+
+                t_stream = time.perf_counter()
+                stream = client.chat(
+                    model=model,
+                    messages=messages,
+                    stream=True,
+                    options={
+                        "temperature": self.config.get('llm_temperature', 0.8),
+                        "num_predict": self.max_tokens,
+                    },
+                )
+                first_chunk = True
+                for chunk in stream:
+                    if getattr(state, "stopped", None) and state.stopped.is_set():
+                        break
+                    if first_chunk:
+                        logger.debug(f"[Timing] Stream opened: {(t_stream - t_start)*1000:.0f}ms")
+                        logger.debug(f"[Timing] First token: {(time.perf_counter() - t_stream)*1000:.0f}ms")
+                        first_chunk = False
+                    content = getattr(chunk.message, 'content', '') if hasattr(chunk, 'message') else ''
+                    if content:
+                        q.put(content)
+            except Exception as exc:
+                q.put(exc)
+            finally:
+                q.put(_DONE)
+
+        thread = threading.Thread(target=_producer, daemon=True)
+        thread.start()
+
+        while True:
+            try:
+                item = await asyncio.get_event_loop().run_in_executor(None, q.get, True, 0.05)
+            except Exception:          # queue.Empty on timeout
                 if getattr(state, "stopped", None) and state.stopped.is_set():
                     break
-                if chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
-        except Exception as e:
-            color_print('error', f"LLM streaming error: {e}")
-            yield "I apologize, I encountered an error."
+                continue
+            if item is _DONE:
+                break
+            if isinstance(item, Exception):
+                color_print('error', f"Ollama streaming error: {item}")
+                yield "I apologize, I encountered an error."
+                break
+            yield item
+    
+    async def _stream_openai_client(self, messages: List[Dict[str, str]], model: str, state, t_start: float):
+        """Stream using OpenAI client via a background thread."""
+        q: queue.Queue = queue.Queue()
+        _DONE = object()
+
+        def _producer():
+            try:
+                client = self._get_client()
+                logger.debug(f"[Timing] OpenAI client ready: {(time.perf_counter() - t_start)*1000:.0f}ms")
+
+                t_stream = time.perf_counter()
+                stream = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=self.config.get('llm_temperature', 0.8),
+                    max_tokens=self.max_tokens,
+                    stream=True,
+                )
+                first_chunk = True
+                for chunk in stream:
+                    if getattr(state, "stopped", None) and state.stopped.is_set():
+                        break
+                    if first_chunk:
+                        logger.debug(f"[Timing] First token: {(time.perf_counter() - t_stream)*1000:.0f}ms")
+                        first_chunk = False
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        q.put(chunk.choices[0].delta.content)
+            except Exception as exc:
+                q.put(exc)
+            finally:
+                q.put(_DONE)
+
+        thread = threading.Thread(target=_producer, daemon=True)
+        thread.start()
+
+        while True:
+            try:
+                item = await asyncio.get_event_loop().run_in_executor(None, q.get, True, 0.05)
+            except Exception:
+                if getattr(state, "stopped", None) and state.stopped.is_set():
+                    break
+                continue
+            if item is _DONE:
+                break
+            if isinstance(item, Exception):
+                color_print('error', f"LLM streaming error: {item}")
+                yield "I apologize, I encountered an error."
+                break
+            yield item
     
     def _store_important_info(self, user_input: str, response: str, state: SessionState):
         if state.long_term_memory:
@@ -173,10 +335,17 @@ class ToolNode(Node):
 
 class OutputNode(Node):
     async def process(self, state: SessionState) -> str:
-        color_print('info', state.last_response or "(no response)")
-        if state.config.get('print_timers', True):
+        # If we streamed to console, only add newline (avoid double-print)
+        if getattr(state, "streamed_to_console", False):
+            import sys
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        else:
+            color_print('info', state.last_response or "(no response)")
+        # Timers go to debug log only (file)
+        if state.timers:
             for timer_name, elapsed in state.timers.items():
-                color_print('info', f"[Timer] {timer_name}: {elapsed:.2f}s")
+                logger.debug(f"[Timer] {timer_name}: {elapsed:.2f}s")
         return ""
 
 import re

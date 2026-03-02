@@ -5,9 +5,9 @@
 
 llm:
   # provider: "ollama" | "openrouter"
-  provider: "openrouter"
-  model: "stepfun/step-3.5-flash:free"
-  api_key: "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"  # Paste your OpenRouter API key here, or set OPENROUTER_API_KEY env var
+  provider: "ollama"
+  model: "qwen3.5:cloud"
+  api_key: ""  # Paste your OpenRouter API key here, or set OPENROUTER_API_KEY env var
   host: "http://localhost:11434"  # Used only when provider=ollama
   temperature: 0.7
   max_tokens: 256
@@ -28,8 +28,8 @@ voice:
 
   tts_engine: "piper"
   tts_voice: "jgkawell/jarvis"
-  tts_quality: "medium"
-  tts_speed: 1.0
+  tts_quality: "high"
+  tts_speed: 0.95
   preload_tts: true
   stream_tts: true
   max_response_words: 0

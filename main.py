@@ -1,21 +1,36 @@
+"""JARVIS — Main entry point.
+
+Supports: --mode voice | cli | test
+"""
+
 import argparse
 import asyncio
 import os
 import sys
 import yaml
+
+# Suppress huggingface_hub symlinks warning on Windows
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
 from datetime import datetime
 from loguru import logger
 
-# Disable other loggers, configure loguru
+# ── Logging ───────────────────────────────────────────────────────────────────
+# File: full debug trace.  Console: clean INFO-level only (loguru handles color).
 logger.remove()
 logger.add(
     "log/jarvis-{time:YYYY-MM-DD}.log",
     rotation="1 day",
     retention="7 days",
     level="DEBUG",
-    format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
+    format="{time:HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
 )
-logger.add(sys.stderr, level="INFO", colorize=True)
+logger.add(
+    sys.stderr,
+    level="INFO",
+    colorize=True,
+    format="<level>[{level.name: <7}]</level> {message}",
+)
 
 from agent.graph import SessionState, AgentGraph
 from agent.nodes import InputNode, ReflectorNode, ToolNode, OutputNode
@@ -26,39 +41,44 @@ from memory.long_term import LongTermMemory
 from voice.wake import WakeListener
 from text_to_speech import TTS
 
-def load_config():
-    with open('config/settings.yaml', 'r') as f:
+
+# ── Config ────────────────────────────────────────────────────────────────────
+
+def load_config() -> dict:
+    with open("config/settings.yaml", "r") as f:
         cfg = yaml.safe_load(f)
-    # Load LLM API key (OpenRouter, Stepfun, etc.)
-    key_file = cfg.get('llm_api_key_file', 'api_key.txt')
+    # Load LLM API key
+    key_file = cfg.get("llm_api_key_file", "api_key.txt")
     if os.path.exists(key_file):
-        with open(key_file, 'r') as f:
-            cfg['llm_api_key'] = f.read().strip()
+        with open(key_file, "r") as f:
+            cfg["llm_api_key"] = f.read().strip()
     else:
-        cfg['llm_api_key'] = None
-    # Load STT API key (Whisper needs OpenAI key; falls back to llm_api_key)
-    stt_key_file = cfg.get('stt_api_key_file', key_file)
+        cfg["llm_api_key"] = None
+    # Load STT API key (falls back to llm_api_key)
+    stt_key_file = cfg.get("stt_api_key_file", key_file)
     if os.path.exists(stt_key_file):
-        with open(stt_key_file, 'r') as f:
-            cfg['stt_api_key'] = f.read().strip()
+        with open(stt_key_file, "r") as f:
+            cfg["stt_api_key"] = f.read().strip()
     else:
-        cfg['stt_api_key'] = cfg.get('llm_api_key')
+        cfg["stt_api_key"] = cfg.get("llm_api_key")
     return cfg
 
-async def initialize_agent(config):
-    # Session state
+
+# ── Agent init ────────────────────────────────────────────────────────────────
+
+async def initialize_agent(config: dict):
     session = SessionState(
         session_id=f"session_{int(datetime.now().timestamp())}",
         conversation_history=[],
         timers={},
         metadata={},
         speech_lock=asyncio.Lock(),
-        stopped=asyncio.Event()
+        stopped=asyncio.Event(),
     )
     session.config = config
     # Memories
-    session.short_term_memory = ShortTermMemory(max_turns=config.get('max_conversation_turns', 15))
-    if config.get('memory_long_term_enabled', True):
+    session.short_term_memory = ShortTermMemory(max_turns=config.get("max_conversation_turns", 15))
+    if config.get("memory_long_term_enabled", False):
         try:
             session.long_term_memory = LongTermMemory(config)
         except Exception as e:
@@ -67,7 +87,7 @@ async def initialize_agent(config):
     else:
         session.long_term_memory = None
     # Personality
-    session.personality = Personality(config.get('personality', {}))
+    session.personality = Personality(config.get("personality", {}))
     # Build agent graph
     input_node = InputNode(name="input")
     reflector = ReflectorNode(name="reflector", config=config)
@@ -77,70 +97,117 @@ async def initialize_agent(config):
     graph.add_node(reflector)
     graph.add_node(tool_node)
     graph.add_node(output_node)
-    # TTS (initialize later in reflector)
     session.tts = None
     return session, graph
 
-async def handle_wake(transcript: str, session: SessionState, graph: AgentGraph, wake_listener: WakeListener):
-    color_print('info', f"[Wake] Detected: {transcript}")
-    # Debounce handled by WakeListener
+
+# ── Voice mode ────────────────────────────────────────────────────────────────
+
+async def handle_wake(
+    transcript: str,
+    session: SessionState,
+    graph: AgentGraph,
+    wake: WakeListener,
+    config: dict,
+):
+    """Process a single voice turn: user said something → LLM → TTS → unmute mic."""
+    logger.info(f"You: {transcript}")
+
+    # Interrupt if already speaking
     if session.speech_lock.locked():
-        color_print('warn', "[Wake] Already speaking, interrupting...")
-        session.stopped.set()  # Signal TTS/agent to stop (do NOT clear - let running task see it)
+        logger.warning("Interrupting current response...")
+        session.stopped.set()
+
     async with session.speech_lock:
-        session.stopped.clear()  # Clear when we start our turn
-        session.metadata['audio_file'] = None  # will be captured by InputNode from STT streaming
+        session.stopped.clear()
+        session.metadata["audio_file"] = None
         session.current_input = transcript
+        session.last_response = None
+        session.streamed_to_console = False
+        session.timers.clear()
         session.conversation_history.append({"role": "user", "content": transcript})
-        # Run agent graph
+
+        # Mute mic while JARVIS speaks (prevent self-hearing / hallucinations)
+        wake.mute()
         try:
-            async for result in graph.run(session, max_turns=config.get('max_conversation_turns', 15)):
-                # result from each node; output_node prints
+            async for result in graph.run(session, max_turns=1):
                 pass
         except asyncio.TimeoutError:
-            color_print('error', "Agent error: LLM response timed out (30s)")
+            logger.error("LLM response timed out (30s)")
         except Exception as e:
-            import traceback
             err_msg = str(e) or type(e).__name__
-            color_print('error', f"Agent error: {err_msg}")
-            if config.get('debug', False):
+            logger.error(f"Agent error: {err_msg}")
+            if config.get("debug", False):
+                import traceback
                 traceback.print_exc()
         finally:
-            # After response done, release lock after audio finishes? TTS finalize handles
-            pass
+            wake.unmute()
 
-async def cli_loop(session: SessionState, graph: AgentGraph, config):
+    session.current_input = ""
+
+
+async def voice_loop(session: SessionState, graph: AgentGraph, config: dict):
+    """Voice mode main loop."""
+    wake = WakeListener(config)
+    dev = config.get("input_device") or config.get("wake_device")
+    dev_info = f"device={dev}" if dev is not None else "default mic"
+    timeout_min = int(config.get("session_idle_timeout_seconds", 600)) // 60
+    logger.info(f"Mic: {dev_info}. Say 'Hey Jarvis' to begin. {timeout_min} min silence = re-wake.")
+
+    loop = asyncio.get_running_loop()
+
+    def on_wake(transcript: str):
+        asyncio.run_coroutine_threadsafe(
+            handle_wake(transcript, session, graph, wake, config), loop
+        )
+
+    wake.start(callback=on_wake)
+    logger.info("JARVIS is listening for wake word...")
+
+    try:
+        while True:
+            await asyncio.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("Shutting down...")
+        wake.stop()
+
+
+# ── CLI mode ──────────────────────────────────────────────────────────────────
+
+async def cli_loop(session: SessionState, graph: AgentGraph, config: dict):
     """Interactive console mode."""
-    color_print('success', '[CLI] JARVIS is ready. Type your messages below. Type "exit" or "quit" to stop.')
+    logger.info("JARVIS is ready. Type your messages below. Type 'exit' to stop.")
+
     while True:
         try:
-            user_input = input('You: ').strip()
+            user_input = input("You: ").strip()
         except (EOFError, KeyboardInterrupt):
             break
-        if user_input.lower() in ('exit', 'quit', 'q'):
-            color_print('info', '[CLI] Exiting.')
+        if user_input.lower() in ("exit", "quit", "q"):
+            logger.info("Goodbye, Sir.")
             break
         if not user_input:
             continue
-        # Run a single turn via graph
+
         async with session.speech_lock:
             session.current_input = user_input
+            session.last_response = None
+            session.streamed_to_console = False
+            session.timers.clear()
             session.conversation_history.append({"role": "user", "content": user_input})
-            color_print('info', f'[CLI] Processing: {user_input}')
             try:
                 async for result in graph.run(session, max_turns=1):
-                    if result:
-                        # If result is non‑empty string, it's from reflector or tool node.
-                        pass
-                # Response is printed by OutputNode; after graph.run finishes, we can continue.
+                    pass
             except Exception as e:
-                color_print('error', f'Agent error: {e}')
-        # Clear input for next iteration
-        session.current_input = ''
+                logger.error(f"Agent error: {e}")
+        session.current_input = ""
+
+
+# ── Test mode ─────────────────────────────────────────────────────────────────
 
 async def single_text_test(session: SessionState, graph: AgentGraph, text: str):
-    """One‑shot test: process a single user text and print response."""
-    color_print('info', f'[Test] User: {text}')
+    """One-shot test: process a single user text and print response."""
+    logger.info(f"Test input: {text}")
     async with session.speech_lock:
         session.current_input = text
         session.conversation_history.append({"role": "user", "content": text})
@@ -148,56 +215,39 @@ async def single_text_test(session: SessionState, graph: AgentGraph, text: str):
             async for result in graph.run(session, max_turns=1):
                 pass
         except Exception as e:
-            color_print('error', f'Agent error: {e}')
-    # Response printed by OutputNode; we can also retrieve from session.last_response
+            logger.error(f"Agent error: {e}")
     if session.last_response:
-        color_print('success', f'[Test] JARVIS: {session.last_response}')
+        logger.success(f"JARVIS: {session.last_response}")
     else:
-        color_print('error', '[Test] No response generated.')
+        logger.error("No response generated.")
 
-async def main():
-    global config
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+async def main(args):
     config = load_config()
-    logger.info("Starting JARVIS with config", config=config)
+    logger.info("Starting JARVIS")
     session, graph = await initialize_agent(config)
-    
+
     if args.mode == "voice":
-        # Wake listener (callback runs in worker thread - must schedule on main loop)
-        wake = WakeListener(config)
-        dev = config.get("input_device") or config.get("wake_device")
-        dev_info = f" device={dev}" if dev is not None else " (default mic)"
-        logger.info(f"Wake listener using{dev_info}. Say 'Hey Jarvis' once, then talk freely. 10 min silence = re-wake.")
-        loop = asyncio.get_running_loop()
-        def on_wake(transcript: str):
-            asyncio.run_coroutine_threadsafe(handle_wake(transcript, session, graph, wake), loop)
-        wake.start(callback=on_wake)
-        logger.info("JARVIS is listening for wake word...")
-        try:
-            # Keep main thread alive
-            while True:
-                await asyncio.sleep(1)
-        except KeyboardInterrupt:
-            logger.info("Shutting down...")
-            wake.stop()
+        await voice_loop(session, graph, config)
     elif args.mode == "cli":
         await cli_loop(session, graph, config)
     elif args.mode == "test":
         if args.test_text:
             await single_text_test(session, graph, args.test_text)
         else:
-            logger.error("--test‑text required when mode=test")
-    else:
-        logger.error(f"Unknown mode: {args.mode}")
+            logger.error("--test-text required when mode=test")
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", default="voice", choices=["voice", "cli", "test"], help="voice (wake word) or cli (console) or test (single text)")
+    parser = argparse.ArgumentParser(description="JARVIS AI Assistant")
+    parser.add_argument(
+        "--mode",
+        default="voice",
+        choices=["voice", "cli", "test"],
+        help="voice (wake word) | cli (console) | test (single message)",
+    )
     parser.add_argument("--test-text", help="For mode=test, provide the text input.")
     args = parser.parse_args()
-    asyncio.run(main())
-def _strip_think_for_tts(text):
-    import re
-    if '<think>' in text and '</think>' not in text:
-        return ''
-    text = re.sub(r'<think>.*?<\/think>', '', text, flags=re.DOTALL)
-    return text.strip() if text.strip() else ""
+    asyncio.run(main(args))

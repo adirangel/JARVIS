@@ -57,6 +57,7 @@ config.local.yaml
 
 # IDE & tools
 .cursor/
+.cursor-plugins/
 .idea/
 .vscode/
 *.swp
@@ -65,6 +66,12 @@ config.local.yaml
 .project
 .pydevproject
 .settings/
+
+# Backup / dev artifacts
+*.backup
+*.bak
+*.bak2
+*.mock
 
 # Logs
 log/

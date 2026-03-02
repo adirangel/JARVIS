@@ -91,30 +91,39 @@ class SpeechToText:
         audio_path: str,
         language: Optional[str] = None,
         vad_filter: Optional[bool] = None,
+        initial_prompt: Optional[str] = None,
     ) -> tuple[list[Any], Any]:
         self._ensure_model()
         lang = self._normalize_language(language or self._language)
         # VAD filters silence/background - reduces "thank you" etc. from noise
         use_vad = vad_filter if vad_filter is not None else True
-        try:
-            segments, info = self._model.transcribe(
-                audio_path,
-                language=lang,
-                beam_size=self._beam_size,
-                vad_filter=use_vad,
+        # Anti-hallucination parameters (Whisper hallucinates "Thank you", etc. on silence)
+        transcribe_kwargs = dict(
+            language=lang,
+            beam_size=self._beam_size,
+            vad_filter=use_vad,
+            condition_on_previous_text=False,       # Prevent compounding hallucinations
+            no_speech_threshold=0.6,                 # Reject high no-speech probability segments
+            log_prob_threshold=-0.5,                 # Reject low-confidence (tighter than default -1.0)
+            compression_ratio_threshold=2.4,         # Reject repetitive/degenerate output
+            hallucination_silence_threshold=1.0,     # Skip suspiciously long silence segments
+        )
+        if use_vad:
+            transcribe_kwargs["vad_parameters"] = dict(
+                min_silence_duration_ms=500,
+                speech_pad_ms=200,
             )
+        if initial_prompt:
+            transcribe_kwargs["initial_prompt"] = initial_prompt
+        try:
+            segments, info = self._model.transcribe(audio_path, **transcribe_kwargs)
         except RuntimeError as e:
             if self._device == "cuda" and ("cublas" in str(e).lower() or "cuda" in str(e).lower() or "dll" in str(e).lower()):
                 print("CUDA failed at inference, retrying with CPU...", flush=True)
                 self._model = None
                 self._device = "cpu"
                 self._ensure_model()
-                segments, info = self._model.transcribe(
-                    audio_path,
-                    language=lang,
-                    beam_size=self._beam_size,
-                    vad_filter=use_vad,
-                )
+                segments, info = self._model.transcribe(audio_path, **transcribe_kwargs)
             else:
                 raise
         return list(segments), info
@@ -124,12 +133,14 @@ class SpeechToText:
         audio_path: str,
         language: Optional[str] = None,
         vad_filter: Optional[bool] = None,
+        initial_prompt: Optional[str] = None,
     ) -> dict:
         """Transcribe audio file and return text + detected language metadata."""
         segments, info = self._transcribe_once(
             audio_path,
             language=language,
             vad_filter=vad_filter,
+            initial_prompt=initial_prompt,
         )
         text = " ".join((s.text or "").strip() for s in segments).strip()
         detected_language = getattr(info, "language", None) or self._normalize_language(language) or "unknown"
@@ -147,12 +158,14 @@ class SpeechToText:
         audio_path: str,
         language: Optional[str] = None,
         vad_filter: Optional[bool] = None,
+        initial_prompt: Optional[str] = None,
     ) -> str:
         """Transcribe audio file to text only."""
         return self.transcribe_detailed(
             audio_path,
             language=language,
             vad_filter=vad_filter,
+            initial_prompt=initial_prompt,
         )["text"]
 
     def transcribe_bytes(
