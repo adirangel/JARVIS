@@ -64,6 +64,24 @@ def test_ensure_complete_sentence():
     assert _ensure_complete_sentence("") == ""
 
 
+def test_strip_think_for_tts():
+    """Ensure <think>...</think> blocks are removed for TTS; only final answer is spoken."""
+    from main import _strip_think_for_tts
+
+    # Complete think block: stripped, answer remains
+    assert _strip_think_for_tts("<think>Wait, let me think...</think> The time is 3 PM.") == "The time is 3 PM."
+    assert _strip_think_for_tts("<think>Internal thought</think> Hello, Sir.") == "Hello, Sir."
+
+    # Unclosed think (streaming): return empty - don't speak thoughts
+    assert _strip_think_for_tts("<think>Still thinking...") == ""
+    assert _strip_think_for_tts("<think>Wait, the user said") == ""
+    assert _strip_think_for_tts("<think>") == ""
+
+    # No think block: pass through
+    assert _strip_think_for_tts("Hello, Sir.") == "Hello, Sir."
+    assert _strip_think_for_tts("<think></think>") == ""  # empty block
+
+
 def test_has_voice_activity_empty_audio_rejected():
     from voice.validation import has_voice_activity
 

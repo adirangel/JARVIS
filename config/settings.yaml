@@ -1,0 +1,41 @@
+wake_word: "Hey Jarvis"
+input_device: 2   # USB Camera mic (working). CORSAIR HS80 (device 1) was silent/muted.
+debounce_seconds: 1.5
+wake_verbose: true
+stt_engine: "google"
+stt_timeout: 5
+llm_provider: "ollama"
+llm_model: "llama3.2:3b"
+llm_api_key_file: "api_key.txt"
+llm_temperature: 0.8
+llm_max_tokens: 256  # Lower = faster responses. For slow Ollama: try ollama run --gpu or use qwen3:4b with GPU
+stream: true
+tts_engine: "piper"
+tts_quality: "medium"
+tts_speed: 0.95
+voice_id: "en-GB-RyanNeural"
+streaming: true
+personality:
+  persona: "jarvis_paul_bettany"
+  mood: "dynamic"
+  use_sir: true
+computer_control_enabled: true
+search_enabled: true
+system_monitor_enabled: true
+memory_long_term_enabled: true
+memory_embeddings_model: "nomic-embed-text"
+memory_summarize_interval_days: 7
+memory_db_path: "data/jarvis.db"
+memory_chroma_path: "data/chroma"
+memory_ollama_host: "http://localhost:11434"
+debug: true
+log_dir: "log"
+console_colors: true
+print_thoughts: true
+print_timers: true
+max_conversation_turns: 15
+session_idle_timeout_seconds: 600   # 10 min silence -> say "Hey Jarvis" to re-wake
+proactive_insights: true
+proactive_interval_minutes: 10
+llm_mock: false
+llm_base_url: "http://localhost:11434/v1"

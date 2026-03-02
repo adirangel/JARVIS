@@ -4,8 +4,11 @@
 # Single model: qwen3:4b for ALL tasks (conversation, planning, reflection, tools, self-evolution).
 
 llm:
-  model: "qwen3:4b"
-  host: "http://localhost:11434"
+  # provider: "ollama" | "openrouter"
+  provider: "ollama"
+  model: "qwen3.5:cloud"
+  api_key: ""  # Paste your OpenRouter API key here, or set OPENROUTER_API_KEY env var
+  host: "http://localhost:11434"  # Used only when provider=ollama
   temperature: 0.7
   max_tokens: 256
   context_window: 6
@@ -25,8 +28,8 @@ voice:
 
   tts_engine: "piper"
   tts_voice: "jgkawell/jarvis"
-  tts_quality: "medium"
-  tts_speed: 1.0
+  tts_quality: "high"
+  tts_speed: 0.95
   preload_tts: true
   stream_tts: true
   max_response_words: 0
@@ -60,8 +63,8 @@ voice:
 
 wake_word:
   models: ["hey_jarvis_v0.1"]
-  threshold: 0.75  # Legacy alias - use wake_confidence if set
-  wake_confidence: 0.78  # 0.75-0.85 reduces false positives (higher = stricter)
+  threshold: 0.0015  # Legacy alias - use wake_confidence if set
+  wake_confidence: 0.0015  # Lower = more sensitive (easier to trigger "Hey Jarvis")
   device: null
   cooldown_seconds: 3
   noise_gate_rms: 0.005
@@ -96,7 +99,7 @@ show_latency: true
 
 # Context size tracking (tokens per session)
 context:
-  max_tokens: 32000
+  max_tokens: 256,000
   warning_threshold: 0.85
   show_after_each_turn: true
 
