@@ -6,6 +6,7 @@ Supports: --mode voice | cli | test
 import argparse
 import asyncio
 import os
+import re
 import sys
 import yaml
 
@@ -40,6 +41,41 @@ from memory.short_term import ShortTermMemory
 from memory.long_term import LongTermMemory
 from voice.wake import WakeListener
 from text_to_speech import TTS
+
+
+# ── LLM helper for memory extraction / consolidation ─────────────────────────
+
+def _make_llm_fn(config: dict):
+    """Return a sync callable ``llm_fn(prompt) -> str`` for memory subsystem."""
+    import httpx
+
+    base_url = config.get("llm_base_url", "http://localhost:11434").rstrip("/v1").rstrip("/")
+    model = config.get("llm_model", "llama3.2:3b")
+
+    def llm_fn(prompt: str) -> str:
+        """Call Ollama /api/generate for a short, non-streaming completion."""
+        resp = httpx.post(
+            f"{base_url}/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False,
+                   "options": {"temperature": 0.3, "num_predict": 512}},
+            timeout=60.0,
+        )
+        resp.raise_for_status()
+        return resp.json().get("response", "").strip()
+
+    return llm_fn
+
+
+# ── Utility ───────────────────────────────────────────────────────────────────
+
+def _strip_think_for_tts(text: str) -> str:
+    """Remove <think>…</think> blocks from LLM output before speaking."""
+    # Remove complete <think>...</think> tags
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    # If an unclosed <think> tag remains, discard everything from it onward
+    if "<think>" in cleaned:
+        cleaned = cleaned[:cleaned.index("<think>")].strip()
+    return cleaned
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -80,7 +116,15 @@ async def initialize_agent(config: dict):
     session.short_term_memory = ShortTermMemory(max_turns=config.get("max_conversation_turns", 15))
     if config.get("memory_long_term_enabled", False):
         try:
-            session.long_term_memory = LongTermMemory(config)
+            llm_fn = _make_llm_fn(config)
+            mem_cfg = {
+                "db_path": config.get("memory_db_path", "data/jarvis.db"),
+                "chroma_path": config.get("memory_chroma_path", "data/chroma"),
+                "embedding_model": config.get("memory_embeddings_model", "nomic-embed-text"),
+                "ollama_host": config.get("memory_ollama_host", "http://localhost:11434"),
+            }
+            session.long_term_memory = LongTermMemory({"memory": mem_cfg}, llm_fn=llm_fn)
+            logger.info("Long-term memory enabled (forever mode)")
         except Exception as e:
             logger.warning(f"Long-term memory disabled: {e}")
             session.long_term_memory = None
@@ -228,6 +272,31 @@ async def main(args):
     config = load_config()
     logger.info("Starting JARVIS")
     session, graph = await initialize_agent(config)
+
+    # ── Schedule heartbeat with memory consolidation ──────────────────────────
+    if session.long_term_memory is not None:
+        from heartbeat import heartbeat_job
+        import threading
+
+        def _heartbeat():
+            """30-minute heartbeat loop in a daemon thread."""
+            import time as _t
+            interval = config.get("proactive_interval_minutes", 30) * 60
+            while True:
+                _t.sleep(interval)
+                try:
+                    llm_invoke = _make_llm_fn(config) if not config.get("llm_mock") else None
+                    heartbeat_job(
+                        memory=session.long_term_memory,
+                        tts_speak=lambda text: logger.info(f"[Heartbeat] {text}"),
+                        llm_invoke=llm_invoke,
+                    )
+                except Exception as e:
+                    logger.debug(f"Heartbeat error: {e}")
+
+        t = threading.Thread(target=_heartbeat, daemon=True)
+        t.start()
+        logger.info("Memory heartbeat scheduled (consolidation + tasks)")
 
     if args.mode == "voice":
         await voice_loop(session, graph, config)

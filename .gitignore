@@ -40,7 +40,7 @@ data/
 *.db
 *.db-wal
 *.db-shm
-memory/
+# memory/ — track memory source files, ignore data via data/ rule
 .a0proj/
 _backup/
 chroma_data/

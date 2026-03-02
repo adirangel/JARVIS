@@ -22,9 +22,12 @@ personality:
 computer_control_enabled: true
 search_enabled: true
 system_monitor_enabled: true
-memory_long_term_enabled: false
-memory_embeddings_model: "sentence-transformers/all-MiniLM-L6-v2"
+memory_long_term_enabled: true
+memory_embeddings_model: "nomic-embed-text"
 memory_summarize_interval_days: 7
+memory_db_path: "data/jarvis.db"
+memory_chroma_path: "data/chroma"
+memory_ollama_host: "http://localhost:11434"
 debug: true
 log_dir: "log"
 console_colors: true

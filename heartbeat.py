@@ -1,13 +1,16 @@
-"""Heartbeat: Every 30 minutes, check memory for pending tasks/reminders.
+"""Heartbeat: periodic memory consolidation + task/reminder check.
 
-Execute if possible, speak witty summary via TTS.
+Runs in a background thread. Called every N minutes by APScheduler.
 """
 
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+from loguru import logger
 
 
 def load_config() -> dict:
@@ -25,11 +28,28 @@ def heartbeat_job(
     tts_speak: Callable[[str], None],
     llm_invoke: Optional[Callable[[str], str]] = None,
 ) -> None:
-    """Run heartbeat: check tasks/reminders, speak witty summary every 30 min (even when idle)."""
+    """Run heartbeat: consolidate old conversations, check tasks/reminders, speak summary."""
+    # ── Memory consolidation ──────────────────────────────────────────────────
+    if hasattr(memory, "consolidate"):
+        try:
+            created = memory.consolidate(age_hours=6)
+            if created:
+                logger.info(f"[Heartbeat] Consolidated {created} daily summaries")
+        except Exception as e:
+            logger.debug(f"[Heartbeat] Consolidation error: {e}")
+
+    # Weekly consolidation (run only on Sundays 00:00-06:00)
+    now = datetime.now()
+    if now.weekday() == 6 and now.hour < 6 and hasattr(memory, "consolidate_weekly"):
+        try:
+            memory.consolidate_weekly()
+        except Exception:
+            pass
+
+    # ── Tasks & reminders ─────────────────────────────────────────────────────
     pending = getattr(memory, "get_pending_tasks", lambda: [])()
     reminders = getattr(memory, "get_reminders", lambda: [])()
 
-    # Mark reminders as done (user will be notified) - fix: pass each id explicitly
     mark_done = getattr(memory, "mark_reminder_done", None)
     if mark_done and callable(mark_done):
         for r in reminders:
@@ -37,7 +57,6 @@ def heartbeat_job(
             if rid is not None:
                 mark_done(rid)
 
-    # Build summary - always speak (even when idle)
     parts = []
     if pending:
         parts.append(f"{len(pending)} pending task(s)")

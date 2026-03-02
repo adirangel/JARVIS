@@ -97,18 +97,18 @@ class ReflectorNode(Node):
         user_input = state.current_input
         if not user_input:
             return ""
-        # Long-term memory
-        if state.long_term_memory:
-            memories = state.long_term_memory.retrieve(user_input, k=3)
-            memory_context = "\n".join([doc for doc, _, _ in memories])
-        else:
-            memory_context = ""
-        # Build messages
+        # Build system prompt with memory context
         system_prompt = self.personality.generate_system_prompt()
+        memory_context = ""
+        if state.long_term_memory:
+            # Layered context: profile + facts + summaries + semantic search
+            memory_context = state.long_term_memory.build_context(
+                user_input, token_budget=3000
+            )
         recent = state.short_term_memory.get_context()
         messages = [{"role": "system", "content": system_prompt}]
         if memory_context:
-            messages.append({"role": "system", "content": f"Relevant memories:\n{memory_context}"})
+            messages.append({"role": "system", "content": memory_context})
         messages.extend(recent)
         
         # For Qwen models with Ollama, add /no_think to disable extended reasoning
@@ -154,11 +154,16 @@ class ReflectorNode(Node):
         # Finalize speech (interruptible via state.stopped)
         if self.tts:
             await self.tts.finalize(state)
-        # Record
+        # Record in short-term + long-term memory
         state.conversation_history.append({"role": "assistant", "content": full_response})
         state.short_term_memory.add("assistant", full_response)
         state.last_response = full_response
-        self._store_important_info(user_input, full_response, state)
+        # Persist to long-term memory (SQLite + ChromaDB + fact extraction)
+        if state.long_term_memory and full_response:
+            try:
+                state.long_term_memory.save_interaction(user_input, full_response)
+            except Exception as e:
+                logger.debug(f"[Memory] save_interaction error: {e}")
         return full_response
     
     async def _stream_response(self, messages: List[Dict[str, str]], state=None):
@@ -280,18 +285,7 @@ class ReflectorNode(Node):
                 break
             yield item
     
-    def _store_important_info(self, user_input: str, response: str, state: SessionState):
-        if state.long_term_memory:
-            if "my name is" in user_input.lower():
-                words = user_input.split()
-                if "is" in words:
-                    idx = words.index("is")
-                    if idx+1 < len(words):
-                        name = words[idx+1].strip(",.!?")
-                        fact = f"User's name is {name}"
-                        state.long_term_memory.store(fact, category='user')
-            if any(trigger in user_input.lower() for trigger in ['prefer', 'like', 'love', 'hate', 'enjoy']):
-                state.long_term_memory.store(f"User preference: {user_input}", category='preference')
+
 
 class ToolNode(Node):
     async def process(self, state: SessionState) -> Optional[str]:
