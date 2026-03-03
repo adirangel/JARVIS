@@ -147,6 +147,15 @@ async def initialize_agent(config: dict):
 
 # ── Voice mode ────────────────────────────────────────────────────────────────
 
+def _push_voice_status(status: str) -> None:
+    """Fire-and-forget: notify the API of voice state change (listening/speaking/processing)."""
+    try:
+        import httpx
+        httpx.post("http://localhost:8000/api/voice/status", json={"status": status}, timeout=1.0)
+    except Exception:
+        pass
+
+
 async def handle_wake(
     transcript: str,
     session: SessionState,
@@ -173,6 +182,7 @@ async def handle_wake(
 
         # Mute mic while JARVIS speaks (prevent self-hearing / hallucinations)
         wake.mute()
+        _push_voice_status("speaking")
         try:
             async for result in graph.run(session, max_turns=1):
                 pass
@@ -186,6 +196,7 @@ async def handle_wake(
                 traceback.print_exc()
         finally:
             wake.unmute()
+            _push_voice_status("listening")
 
     session.current_input = ""
 
@@ -207,6 +218,7 @@ async def voice_loop(session: SessionState, graph: AgentGraph, config: dict):
 
     wake.start(callback=on_wake)
     logger.info("JARVIS is listening for wake word...")
+    _push_voice_status("listening")
 
     try:
         while True:

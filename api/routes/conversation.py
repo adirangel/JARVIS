@@ -1,4 +1,4 @@
-"""Conversation endpoints - GET history, POST message."""
+"""Conversation endpoints - GET history, POST message (with WS token streaming)."""
 
 import asyncio
 import os
@@ -6,9 +6,11 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from api.routes.uptime import increment_command_count
+from api.websocket import broadcast_conversation, broadcast_token
 
 router = APIRouter(prefix="/api", tags=["conversation"])
 
@@ -68,7 +70,15 @@ async def _ensure_agent():
     )
     if config.get("memory_long_term_enabled", True):
         try:
-            session.long_term_memory = LongTermMemory(config)
+            from main import _make_llm_fn
+            llm_fn = _make_llm_fn(config)
+            mem_cfg = {
+                "db_path": config.get("memory_db_path", "data/jarvis.db"),
+                "chroma_path": config.get("memory_chroma_path", "data/chroma"),
+                "embedding_model": config.get("memory_embeddings_model", "nomic-embed-text"),
+                "ollama_host": config.get("memory_ollama_host", "http://localhost:11434"),
+            }
+            session.long_term_memory = LongTermMemory({"memory": mem_cfg}, llm_fn=llm_fn)
         except Exception:
             session.long_term_memory = None
     else:
@@ -111,7 +121,7 @@ async def get_conversation():
 
 @router.post("/conversation")
 async def post_conversation(req: SendMessageRequest):
-    """Send a message and get JARVIS response."""
+    """Send a message and get JARVIS response.  Streams tokens to WS clients in real-time."""
     text = (req.text or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
@@ -119,13 +129,16 @@ async def post_conversation(req: SendMessageRequest):
     state = await _ensure_agent()
     session = state["session"]
     graph = state["graph"]
-    config = state["config"]
 
     async with session.speech_lock:
         session.stopped.clear()
         session.current_input = text
         session.conversation_history.append({"role": "user", "content": text})
         increment_command_count()
+
+        # Broadcast user message immediately
+        await broadcast_conversation(session.conversation_history)
+
         try:
             last_response = ""
             async for result in graph.run(session, max_turns=1):
@@ -135,7 +148,100 @@ async def post_conversation(req: SendMessageRequest):
         except Exception as e:
             response = f"I encountered an error, sir: {e}"
 
+    # Broadcast full conversation with assistant response
+    await broadcast_conversation(session.conversation_history)
+
     return {"response": response, "messages": session.conversation_history}
+
+
+@router.post("/conversation/stream")
+async def post_conversation_stream(req: SendMessageRequest):
+    """Send a message and stream response as Server-Sent Events (SSE).
+
+    Each SSE event is one of:
+      data: {"token": "chunk"}      — partial token
+      data: {"done": true, "response": "full text"}  — final
+    """
+    import json
+
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    state = await _ensure_agent()
+    session = state["session"]
+
+    async def _generate():
+        from agent.nodes import ReflectorNode
+        graph = state["graph"]
+
+        async with session.speech_lock:
+            session.stopped.clear()
+            session.current_input = text
+            session.conversation_history.append({"role": "user", "content": text})
+            increment_command_count()
+            await broadcast_conversation(session.conversation_history)
+
+            # Find the ReflectorNode so we can stream its output
+            reflector = None
+            for node in [graph._entry_node] + list(getattr(graph, '_nodes', {}).values()):
+                if isinstance(node, ReflectorNode):
+                    reflector = node
+                    break
+
+            full_response = ""
+            if reflector:
+                await reflector.initialize()
+                # Build messages exactly as ReflectorNode.process() does
+                system_prompt = reflector.personality.generate_system_prompt()
+                memory_context = ""
+                if session.long_term_memory:
+                    memory_context = session.long_term_memory.build_context(text, token_budget=3000)
+                recent = session.short_term_memory.get_context()
+                messages = [{"role": "system", "content": system_prompt}]
+                if memory_context:
+                    messages.append({"role": "system", "content": memory_context})
+                messages.extend(recent)
+
+                model_name = reflector.config.get('llm_model', '').lower()
+                user_message = text
+                if reflector.provider == "ollama" and "qwen" in model_name:
+                    user_message = f"{text} /no_think"
+                messages.append({"role": "user", "content": user_message})
+
+                async for chunk in reflector._stream_response(messages, session):
+                    if getattr(session, "stopped", None) and session.stopped.is_set():
+                        break
+                    full_response += chunk
+                    # Push to WebSocket clients AND SSE
+                    await broadcast_token(chunk)
+                    yield f"data: {json.dumps({'token': chunk})}\n\n"
+            else:
+                # Fallback: non-streaming
+                try:
+                    async for result in graph.run(session, max_turns=1):
+                        if result:
+                            full_response = result
+                    full_response = getattr(session, "last_response", None) or full_response
+                except Exception as e:
+                    full_response = f"I encountered an error, sir: {e}"
+
+            # Finalize
+            session.conversation_history.append({"role": "assistant", "content": full_response})
+            session.short_term_memory.add("assistant", full_response)
+            session.last_response = full_response
+            if session.long_term_memory and full_response:
+                try:
+                    session.long_term_memory.save_interaction(text, full_response)
+                except Exception:
+                    pass
+            await broadcast_token("", done=True)
+            await broadcast_conversation(session.conversation_history)
+            yield f"data: {json.dumps({'done': True, 'response': full_response})}\n\n"
+
+        session.current_input = ""
+
+    return StreamingResponse(_generate(), media_type="text/event-stream")
 
 
 @router.delete("/conversation")

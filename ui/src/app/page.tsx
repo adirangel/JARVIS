@@ -9,7 +9,7 @@ import UptimeCard from "@/components/Sidebar/UptimeCard";
 import AudioVisualizer from "@/components/CenterPanel/AudioVisualizer";
 import VoiceControls from "@/components/CenterPanel/VoiceControls";
 import ConversationPanel from "@/components/Conversation/ConversationPanel";
-import { getConversation, postConversation, getWeather, getHealth, getVoiceStatus } from "@/lib/api";
+import { getConversation, streamConversation, getWeather, getHealth, getVoiceStatus } from "@/lib/api";
 import { createWebSocket, WsMessage } from "@/lib/websocket";
 
 type Message = { role: string; content: string };
@@ -17,11 +17,13 @@ type Message = { role: string; content: string };
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
+  const [streamingText, setStreamingText] = useState<string>("");
   const [backendOnline, setBackendOnline] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState<string>("idle");
   const [weatherSummary, setWeatherSummary] = useState<{ temp_c: number; location: string } | null>(null);
   const destroyWsRef = useRef<(() => void) | null>(null);
+  const abortStreamRef = useRef<(() => void) | null>(null);
 
   // Health check polling
   useEffect(() => {
@@ -73,6 +75,12 @@ export default function Home() {
         if (msg.type === "status") {
           setVoiceStatus(msg.status);
         }
+        if (msg.type === "stream" && !msg.done) {
+          setStreamingText((prev) => prev + msg.token);
+        }
+        if (msg.type === "stream" && msg.done) {
+          setStreamingText("");
+        }
       },
       (connected) => setWsConnected(connected)
     );
@@ -85,19 +93,44 @@ export default function Home() {
   }, [backendOnline]);
 
   const handleSend = useCallback(async (text: string) => {
+    // Add user message immediately
     setMessages((prev) => [...prev, { role: "user", content: text }]);
     setLoading(true);
-    try {
-      const res = await postConversation(text);
-      setMessages(res.messages);
-    } catch {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: "I encountered an error, sir. Please ensure the JARVIS backend is running." },
-      ]);
-    } finally {
-      setLoading(false);
-    }
+    setStreamingText("");
+
+    // Cancel any existing stream
+    abortStreamRef.current?.();
+
+    const abort = streamConversation(
+      text,
+      // onToken: accumulate streaming text
+      (token) => {
+        setStreamingText((prev) => prev + token);
+      },
+      // onDone: replace streaming text with final conversation
+      (fullResponse) => {
+        setStreamingText("");
+        setLoading(false);
+        // The WS broadcast_conversation will update messages,
+        // but also set it directly in case WS is slow
+        setMessages((prev) => {
+          // If the last message is already the assistant response (from WS), skip
+          const last = prev[prev.length - 1];
+          if (last?.role === "assistant" && last.content === fullResponse) return prev;
+          return [...prev, { role: "assistant", content: fullResponse }];
+        });
+      },
+      // onError: fallback with error message
+      () => {
+        setStreamingText("");
+        setLoading(false);
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: "I encountered an error, sir. Please ensure the JARVIS backend is running." },
+        ]);
+      }
+    );
+    abortStreamRef.current = abort;
   }, []);
 
   const statusLabel =
@@ -152,6 +185,7 @@ export default function Home() {
             onSend={handleSend}
             loading={loading}
             backendOnline={backendOnline}
+            streamingText={streamingText}
           />
         </section>
       </div>

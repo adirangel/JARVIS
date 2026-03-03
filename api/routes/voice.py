@@ -1,14 +1,28 @@
-"""Voice status endpoint - listening/speaking state."""
+"""Voice status endpoint - real-time listening/speaking state via WS bridge."""
 
 from fastapi import APIRouter
 
-router = APIRouter(prefix="/api", tags=["voice"])
+from api.websocket import get_voice_status, set_voice_status
 
-# Voice runs in separate process (main.py --mode voice); API returns status
-_voice_status = "listening"  # listening | speaking | idle
+router = APIRouter(prefix="/api", tags=["voice"])
 
 
 @router.get("/voice/status")
-async def get_voice_status():
-    """Return current voice state."""
-    return {"status": _voice_status, "message": "Listening for wake word..."}
+async def voice_status():
+    """Return current voice state (bridged from voice process via WS module)."""
+    status = get_voice_status()
+    labels = {
+        "listening": "Listening for wake word...",
+        "speaking": "Speaking...",
+        "processing": "Processing...",
+        "idle": "Awaiting activation...",
+    }
+    return {"status": status, "message": labels.get(status, status)}
+
+
+@router.post("/voice/status")
+async def update_voice_status(body: dict):
+    """Called by voice process to push status changes (listening/speaking/idle)."""
+    new_status = body.get("status", "idle")
+    set_voice_status(new_status)
+    return {"ok": True}

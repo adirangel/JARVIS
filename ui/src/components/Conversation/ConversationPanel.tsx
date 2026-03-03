@@ -13,18 +13,20 @@ export default function ConversationPanel({
   onSend,
   loading,
   backendOnline,
+  streamingText,
 }: {
   messages: Message[];
   setMessages: (m: Message[]) => void;
   onSend: (text: string) => void;
   loading: boolean;
   backendOnline?: boolean;
+  streamingText?: string;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, loading]);
+  }, [messages, loading, streamingText]);
 
   const handleClear = async () => {
     try {
@@ -86,7 +88,17 @@ export default function ConversationPanel({
             content={m.content}
           />
         ))}
-        {loading && (
+        {loading && streamingText ? (
+          <div className="flex justify-start mb-4">
+            <div className="max-w-[85%] bg-mc-bg-tertiary rounded-lg px-4 py-2.5">
+              <div className="text-xs font-medium text-mc-accent mb-1">JARVIS</div>
+              <div className="text-sm whitespace-pre-wrap leading-relaxed text-mc-text">
+                {streamingText}
+                <span className="inline-block w-1.5 h-4 bg-mc-accent ml-0.5 animate-pulse" />
+              </div>
+            </div>
+          </div>
+        ) : loading ? (
           <div className="flex justify-start mb-4">
             <div className="bg-mc-bg-tertiary rounded-lg px-4 py-2">
               <div className="text-xs text-mc-accent mb-1">JARVIS</div>
@@ -97,7 +109,7 @@ export default function ConversationPanel({
               </div>
             </div>
           </div>
-        )}
+        ) : null}
       </div>
       <MessageInput onSend={onSend} disabled={loading || !backendOnline} />
     </div>
