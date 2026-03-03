@@ -111,20 +111,26 @@ TOOL_DECLARATIONS = [
     {
         "name": "browser_control",
         "description": (
-            "Full browser automation: navigate to URL, search, click element, type text, scroll, "
-            "fill forms, read page text. Uses Playwright for reliable interaction."
+            "Control the user's real Chrome/Edge browser: navigate to URL, Google search, "
+            "type text in any field or chat, click, scroll, open/close tabs, go back/forward, "
+            "focus address bar, find text on page. Uses the actual browser, not a separate instance. "
+            "Use type_and_enter to send messages in chat interfaces."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "action": {
                     "type": "STRING",
-                    "description": "go_to, search, click, type, scroll, get_text, fill_form, back, forward, refresh, close"
+                    "description": (
+                        "go_to, search, click, type, type_and_enter, scroll, new_tab, close_tab, "
+                        "next_tab, prev_tab, back, forward, refresh, address, find, "
+                        "select_all, copy, paste, close, focus"
+                    )
                 },
-                "url": {"type": "STRING", "description": "URL for go_to action"},
+                "url": {"type": "STRING", "description": "URL for go_to/new_tab/address actions"},
                 "query": {"type": "STRING", "description": "Search query for search action"},
-                "selector": {"type": "STRING", "description": "CSS selector or text to find element"},
-                "text": {"type": "STRING", "description": "Text to type"},
+                "selector": {"type": "STRING", "description": "For click: coordinates as 'x,y'"},
+                "text": {"type": "STRING", "description": "Text to type (supports Hebrew/Unicode)"},
                 "direction": {"type": "STRING", "description": "Scroll direction: up or down"}
             },
             "required": ["action"]

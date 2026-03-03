@@ -31,7 +31,7 @@ FORMAT = pyaudio.paInt16
 CHANNELS = 1
 
 # ── Gemini model ──────────────────────────────────────────────────────────────
-LIVE_MODEL = "models/gemini-2.5-flash-preview-native-audio-dialog"
+LIVE_MODEL = "models/gemini-2.5-flash-native-audio-latest"
 
 # ── System prompt with tool routing rules ─────────────────────────────────────
 SYSTEM_PROMPT = (
@@ -63,17 +63,23 @@ class GeminiLive:
         self.on_status = on_status or (lambda s: None)       # Status: LISTENING/SPEAKING/PROCESSING
         self.on_user_text = on_user_text or (lambda t: None) # User transcript
         self.on_audio_level = on_audio_level or (lambda l: None)
+        self.on_auth_error: Optional[Callable[[str], None]] = None  # Auth failure callback
 
         self.client: Optional[genai.Client] = None
         self.session = None
         self._running = False
         self._audio_out_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._audio_in_queue: asyncio.Queue[bytes] = asyncio.Queue()
+        self._is_speaking = False  # True while JARVIS audio is playing
 
         # PyAudio
         self._pa: Optional[pyaudio.PyAudio] = None
         self._input_stream = None
         self._output_stream = None
+
+        # Callbacks for complete user/jarvis turns (not fragments)
+        self.on_user_turn_complete: Optional[Callable[[str], None]] = None
+        self.on_jarvis_turn_complete: Optional[Callable[[], None]] = None
 
         # Memory hooks (set externally)
         self.save_memory: Optional[Callable] = None  # (user_text, jarvis_text) -> None
@@ -124,7 +130,18 @@ class GeminiLive:
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                err_str = str(e)
                 logger.error(f"[GeminiLive] Session error: {e}\n{traceback.format_exc()}")
+
+                # Don't retry on authentication errors
+                if any(msg in err_str for msg in ("API key not valid", "PERMISSION_DENIED", "UNAUTHENTICATED", "is not found for API version", "not supported for bidiGenera")):
+                    logger.error("[GeminiLive] Authentication failed — stopping retries.")
+                    self.on_status("AUTH_ERROR")
+                    if self.on_auth_error:
+                        self.on_auth_error("API key not valid. Please enter a valid Gemini API key.")
+                    self._running = False
+                    break
+
                 self.on_status("RECONNECTING")
                 if self._running:
                     await asyncio.sleep(3)
@@ -191,6 +208,15 @@ class GeminiLive:
 
     # ── Receive from Gemini (audio + text + tool calls) ───────────────────────
 
+    def _clear_audio_queue(self):
+        """Drain the audio output queue (on interruption)."""
+        while not self._audio_out_queue.empty():
+            try:
+                self._audio_out_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        self._is_speaking = False
+
     async def _receive_audio(self):
         """Process Gemini responses: audio data, transcriptions, tool calls."""
         current_user_text = ""
@@ -203,11 +229,23 @@ class GeminiLive:
                     # Server content (audio + transcriptions)
                     server_content = response.server_content
                     if server_content:
+                        # Interruption — user spoke while JARVIS was speaking
+                        interrupted = getattr(server_content, 'interrupted', False)
+                        if interrupted:
+                            logger.info("[GeminiLive] User interrupted — clearing audio queue")
+                            self._clear_audio_queue()
+                            self.on_status("LISTENING")
+                            # Finish the jarvis line if there was one
+                            if current_jarvis_text.strip() and self.on_jarvis_turn_complete:
+                                self.on_jarvis_turn_complete()
+                            current_jarvis_text = ""
+
                         # Audio data
                         if server_content.model_turn and server_content.model_turn.parts:
                             for part in server_content.model_turn.parts:
                                 if part.inline_data and part.inline_data.data:
                                     await self._audio_out_queue.put(part.inline_data.data)
+                                    self._is_speaking = True
                                     self.on_status("SPEAKING")
 
                         # Output audio transcription (JARVIS speaking)
@@ -226,7 +264,13 @@ class GeminiLive:
 
                         # Turn complete
                         if server_content.turn_complete:
+                            self._is_speaking = False
                             self.on_status("LISTENING")
+                            # Finish display lines — user first, then jarvis
+                            if current_user_text.strip() and self.on_user_turn_complete:
+                                self.on_user_turn_complete(current_user_text.strip())
+                            if current_jarvis_text.strip() and self.on_jarvis_turn_complete:
+                                self.on_jarvis_turn_complete()
                             # Save to memory
                             if (current_user_text.strip() or current_jarvis_text.strip()) and self.save_memory:
                                 try:
@@ -249,7 +293,9 @@ class GeminiLive:
                             args = dict(fc.args) if fc.args else {}
                             logger.info(f"[GeminiLive] Tool call: {name}({args})")
                             try:
-                                result = execute_tool(name, args)
+                                # Run in thread to avoid blocking asyncio loop
+                                # (Playwright sync API fails inside asyncio)
+                                result = await asyncio.to_thread(execute_tool, name, args)
                             except Exception as e:
                                 result = f"Tool error: {e}"
                             function_responses.append(

@@ -40,9 +40,16 @@ def start_gemini(api_key: str, gui: JarvisGUI):
         api_key=api_key,
         on_text=lambda t: gui.append_token(t),
         on_status=lambda s: gui.set_status(s),
-        on_user_text=lambda t: gui._append_log("user", t),
+        on_user_text=lambda t: gui.append_user_token(t),
         on_audio_level=lambda l: gui.set_audio_level(l),
     )
+
+    # Complete-line callbacks (newline after streaming)
+    engine.on_user_turn_complete = lambda text: gui.finish_user_line()
+    engine.on_jarvis_turn_complete = lambda: gui.finish_jarvis_line()
+
+    # On auth failure, show API key screen again
+    engine.on_auth_error = lambda msg: gui.show_api_key_screen(msg)
 
     # Wire memory (optional — if memory module is available)
     try:

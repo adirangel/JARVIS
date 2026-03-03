@@ -12,4 +12,4 @@ PyYAML
 psutil
 httpx>=0.27.0
 Pillow
-playwright
+python-bidi

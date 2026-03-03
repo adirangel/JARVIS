@@ -14,6 +14,7 @@ import json
 import math
 import os
 import random
+import re
 import threading
 import time
 import tkinter as tk
@@ -21,6 +22,18 @@ from tkinter import font as tkfont
 from typing import Callable, Optional
 
 from loguru import logger
+
+# Unicode BiDi control characters
+_RLM = "\u200F"   # Right-to-Left Mark — sets paragraph direction to RTL
+_LRM = "\u200E"   # Left-to-Right Mark — isolates LTR tokens inside RTL text
+
+# Regex for LTR tokens that need LRM isolation inside Hebrew text
+_LTR_TOKEN_RE = re.compile(
+    r"https?://\S+"
+    r"|\b\d{1,3}(?:\.\d{1,3}){3}\b"
+    r"|\bv?\d+(?:\.\d+)+\b"
+    r"|\b[A-Za-z][A-Za-z0-9._-]*\b"
+)
 
 # ── Color palette (Iron Man HUD) ─────────────────────────────────────────────
 BG_COLOR = "#0a0e17"
@@ -67,6 +80,9 @@ class JarvisGUI:
         self._conversation_lines: list[tuple[str, str]] = []  # (role, text)
         self._typewriter_queue: list[tuple[str, str]] = []
         self._typewriter_active = False
+        # Streaming buffers — tokens accumulate, displayed at turn_complete
+        self._jarvis_buffer: str = ""
+        self._user_buffer: str = ""
 
         # Load saved API key
         self._api_key = self._load_api_key()
@@ -76,11 +92,22 @@ class JarvisGUI:
         else:
             self._build_api_key_screen()
 
+    @staticmethod
+    def _pick_font_family(root: tk.Tk) -> str:
+        """Pick the best available font with Hebrew support."""
+        candidates = ["Segoe UI", "Arial", "Tahoma", "David", "Noto Sans Hebrew"]
+        available = set(tkfont.families(root))
+        for f in candidates:
+            if f in available:
+                return f
+        return "Arial"
+
     def _setup_fonts(self):
+        heb_font = self._pick_font_family(self.root) or "Arial"
         self.font_title = tkfont.Font(family="Consolas", size=20, weight="bold")
         self.font_status = tkfont.Font(family="Consolas", size=11)
-        self.font_log = tkfont.Font(family="Consolas", size=10)
-        self.font_input = tkfont.Font(family="Consolas", size=11)
+        self.font_log = tkfont.Font(family=heb_font, size=11)
+        self.font_input = tkfont.Font(family=heb_font, size=11)
         self.font_entry = tkfont.Font(family="Consolas", size=12)
         self.font_button = tkfont.Font(family="Consolas", size=11, weight="bold")
 
@@ -207,6 +234,9 @@ class JarvisGUI:
         self._log_text.tag_configure("jarvis", foreground=JARVIS_COLOR)
         self._log_text.tag_configure("system", foreground=ACCENT_DIM)
         self._log_text.tag_configure("cursor", foreground=ACCENT_COLOR)
+        # RTL tags for Hebrew text
+        self._log_text.tag_configure("user_rtl", foreground=USER_COLOR, justify="right")
+        self._log_text.tag_configure("jarvis_rtl", foreground=JARVIS_COLOR, justify="right")
 
         # Input bar
         input_frame = tk.Frame(self.root, bg=BG_COLOR)
@@ -260,15 +290,25 @@ class JarvisGUI:
 
     # ── Log / Conversation display ────────────────────────────────────────────
 
+    @staticmethod
+    def _has_hebrew(text: str) -> bool:
+        """Check if text contains Hebrew characters."""
+        return any('\u0590' <= ch <= '\u05FF' for ch in text)
+
+    @staticmethod
+    def _lrm_wrap(text: str) -> str:
+        """Wrap LTR tokens (URLs, IPs, English words) with LRM marks
+        so they stay readable inside RTL text."""
+        return _LTR_TOKEN_RE.sub(lambda m: f"{_LRM}{m.group(0)}{_LRM}", text)
+
     def _append_log(self, role: str, text: str, typewriter: bool = False):
-        """Add a message to the conversation log. Thread-safe."""
+        """Add a complete message to the conversation log. Thread-safe."""
         if not hasattr(self, '_log_text'):
             return
 
         def _do():
             self._log_text.config(state="normal")
             prefix = ""
-            tag = role
             if role == "user":
                 prefix = "You: "
             elif role == "jarvis":
@@ -276,10 +316,24 @@ class JarvisGUI:
             elif role == "system":
                 prefix = ">>> "
 
-            if not text.endswith("\n"):
-                line = prefix + text + "\n"
+            is_rtl = self._has_hebrew(text)
+            clean = text.rstrip("\n")
+
+            if is_rtl:
+                # RLM at start sets paragraph direction to RTL.
+                # LRM wraps around the English prefix to isolate it.
+                # LTR tokens inside Hebrew are also LRM-wrapped.
+                msg = self._lrm_wrap(clean)
+                if prefix:
+                    line = f"{_RLM}{_LRM}{prefix}{_LRM}{msg}\n"
+                else:
+                    line = f"{_RLM}{msg}\n"
+                tag = "user_rtl" if role == "user" else (
+                    "jarvis_rtl" if role == "jarvis" else role
+                )
             else:
-                line = prefix + text
+                line = prefix + clean + "\n"
+                tag = role
 
             self._log_text.insert("end", line, tag)
             self._log_text.see("end")
@@ -288,28 +342,26 @@ class JarvisGUI:
         self.root.after(0, _do)
 
     def append_token(self, token: str):
-        """Append a streaming token to the last JARVIS message. Thread-safe."""
-        def _do():
-            self._log_text.config(state="normal")
-            # If this is the first token, add prefix
-            end_pos = self._log_text.index("end-1c linestart")
-            line_text = self._log_text.get(end_pos, "end-1c")
-            if not line_text.strip():
-                self._log_text.insert("end", "JARVIS: ", "jarvis")
-            self._log_text.insert("end", token, "jarvis")
-            self._log_text.see("end")
-            self._log_text.config(state="disabled")
+        """Buffer a streaming JARVIS token (displayed at turn_complete)."""
+        self._jarvis_buffer += token
 
-        self.root.after(0, _do)
+    def append_user_token(self, token: str):
+        """Buffer a streaming user transcription token (displayed at turn_complete)."""
+        self._user_buffer += token
 
     def finish_jarvis_line(self):
-        """End the current JARVIS streaming line. Thread-safe."""
-        def _do():
-            self._log_text.config(state="normal")
-            self._log_text.insert("end", "\n")
-            self._log_text.see("end")
-            self._log_text.config(state="disabled")
-        self.root.after(0, _do)
+        """Flush JARVIS buffer to display as a complete line. Thread-safe."""
+        text = self._jarvis_buffer.strip()
+        self._jarvis_buffer = ""
+        if text:
+            self._append_log("jarvis", text)
+
+    def finish_user_line(self):
+        """Flush user buffer to display as a complete line. Thread-safe."""
+        text = self._user_buffer.strip()
+        self._user_buffer = ""
+        if text:
+            self._append_log("user", text)
 
     # ── Status ────────────────────────────────────────────────────────────────
 
@@ -320,6 +372,7 @@ class JarvisGUI:
             "ONLINE": STATUS_ONLINE, "LISTENING": STATUS_ONLINE,
             "SPEAKING": STATUS_SPEAKING, "PROCESSING": STATUS_PROCESSING,
             "CONNECTING": STATUS_PROCESSING, "RECONNECTING": STATUS_PROCESSING,
+            "AUTH_ERROR": "#ff5252",
             "OFFLINE": "#ff5252",
         }
         color = colors.get(status, ACCENT_DIM)
@@ -389,21 +442,37 @@ class JarvisGUI:
             if os.path.exists(CONFIG_PATH):
                 with open(CONFIG_PATH, "r") as f:
                     data = json.load(f)
-                    return data.get("gemini_api_key")
+                    key = data.get("gemini_api_key", "")
+                    if key and self._is_gemini_key(key):
+                        return key
         except Exception:
             pass
 
-        # Fallback: check api_key.txt
+        # Fallback: check api_key.txt (only if it looks like a Gemini key)
         try:
             if os.path.exists("api_key.txt"):
                 with open("api_key.txt", "r") as f:
                     key = f.read().strip()
-                    if key and len(key) > 10:
+                    if key and self._is_gemini_key(key):
                         return key
         except Exception:
             pass
 
         return None
+
+    @staticmethod
+    def _is_gemini_key(key: str) -> bool:
+        """Check if a key looks like a Gemini API key (starts with AIza)."""
+        return key.startswith("AIza") and len(key) > 20
+
+    def show_api_key_screen(self, error_msg: str = ""):
+        """Switch to API key entry screen (e.g. after auth failure). Thread-safe."""
+        def _do():
+            self._api_key = None
+            self._build_api_key_screen()
+            if error_msg and hasattr(self, '_key_error'):
+                self._key_error.config(text=error_msg)
+        self.root.after(0, _do)
 
     def _save_api_key(self, key: str):
         os.makedirs("config", exist_ok=True)
