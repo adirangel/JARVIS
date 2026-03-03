@@ -1,27 +1,15 @@
-# JARVIS - Voice mode (hotfix/upgrade-architecture)
-aiohttp>=3.9
-fastapi>=0.115.0
-uvicorn[standard]>=0.32.0
-httpx>=0.27.0
-openai>=1.0
+# JARVIS - Gemini Live Audio + Tkinter HUD
+google-genai>=1.0
 pyaudio
 pyautogui
 pynput
 keyboard
 mouse
-sentence-transformers
 chromadb
-piper-tts
-edge-tts
 numpy
-pandas
 loguru
 PyYAML
-torch
-soundfile
-librosa
-faster-whisper
 psutil
-pydub
-pyaudio
-sounddevice
+httpx>=0.27.0
+Pillow
+playwright

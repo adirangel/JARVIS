@@ -31,6 +31,7 @@ class VectorStore:
         cache_recent: bool = True,
         max_cache_size: int = 50,
         sqlite_store=None,
+        embed_fn=None,
     ):
         if not CHROMADB_AVAILABLE:
             raise ImportError("chromadb is required. pip install chromadb")
@@ -40,6 +41,14 @@ class VectorStore:
         full_path.mkdir(parents=True, exist_ok=True)
 
         self._client = chromadb.PersistentClient(path=str(full_path))
+
+        # Use custom embedding function or let ChromaDB handle it
+        ef = None
+        if embed_fn:
+            self._embed_fn = embed_fn
+        else:
+            self._embed_fn = None  # Will use ChromaDB default
+
         self._collection = self._client.get_or_create_collection(
             name=collection_name,
             metadata={"hnsw:space": "cosine"},
@@ -52,10 +61,19 @@ class VectorStore:
         self._sqlite = sqlite_store  # for access-count boosting
 
     def _get_embedding(self, text: str) -> list[float]:
-        import ollama
-        client = ollama.Client(host=self._ollama_host)
-        response = client.embed(model=self._embedding_model, input=text)
-        return response["embeddings"][0]
+        # Custom embedding function (e.g. Gemini)
+        if self._embed_fn:
+            return self._embed_fn(text)
+        # Fallback: try Ollama (legacy)
+        try:
+            import ollama
+            client = ollama.Client(host=self._ollama_host)
+            response = client.embed(model=self._embedding_model, input=text)
+            return response["embeddings"][0]
+        except ImportError:
+            pass
+        # Last resort: let ChromaDB do it (won't have explicit embeddings)
+        raise RuntimeError("No embedding function available. Set embed_fn or install ollama.")
 
     def store_interaction(
         self,
