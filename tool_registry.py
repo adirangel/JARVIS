@@ -200,15 +200,149 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "reminder",
-        "description": "Set a timed reminder. Uses Windows Task Scheduler.",
+        "description": (
+            "Manage reminders: set a new reminder, list all active reminders, or mark one as done. "
+            "Reminders persist across sessions. Use 'list' to show all, 'set' to create, 'done' to complete."
+        ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "message": {"type": "STRING", "description": "Reminder message"},
-                "minutes": {"type": "INTEGER", "description": "Minutes from now"},
-                "time": {"type": "STRING", "description": "Specific time like '14:30' or '2:30 PM'"}
+                "action": {
+                    "type": "STRING",
+                    "description": "set (create reminder), list (show all active), done (mark completed)"
+                },
+                "message": {"type": "STRING", "description": "Reminder message (for set action)"},
+                "minutes": {"type": "INTEGER", "description": "Minutes from now (for set action)"},
+                "time": {"type": "STRING", "description": "Specific time like '14:30' or '2:30 PM' (for set action). Can also be 'tomorrow 14:30'"},
+                "reminder_id": {"type": "INTEGER", "description": "Reminder ID (for done action)"}
             },
-            "required": ["message"]
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "task_manager",
+        "description": (
+            "Manage tasks/to-do list: add new tasks, list pending, mark complete, delete. "
+            "Tasks persist across sessions. The user can ask to remember things to do."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": "add, list, complete, delete"
+                },
+                "description": {"type": "STRING", "description": "Task description (for add)"},
+                "due": {"type": "STRING", "description": "Optional due date/time like 'tomorrow 14:00' or '2026-03-10'"},
+                "task_id": {"type": "INTEGER", "description": "Task ID (for complete/delete)"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "clipboard_manager",
+        "description": "Read from or write to the system clipboard.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "read or write"},
+                "text": {"type": "STRING", "description": "Text to copy to clipboard (for write)"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "process_manager",
+        "description": "List running processes, kill a process, or check if a specific app is running.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "list, kill, check"},
+                "name": {"type": "STRING", "description": "Process name to kill or check (e.g. 'chrome', 'notepad')"},
+                "sort_by": {"type": "STRING", "description": "Sort list by: cpu, memory, name (default: memory)"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "daily_briefing",
+        "description": (
+            "Generate a daily briefing for the user: current time, weather, system status, "
+            "pending tasks, upcoming reminders, and top news headlines. The morning report."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "city": {"type": "STRING", "description": "City for weather (default: Tel Aviv)"}
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "notes",
+        "description": "Quick persistent notes: save, search, list, or delete notes. Uses the JARVIS knowledge base.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "save, list, search, delete"},
+                "title": {"type": "STRING", "description": "Note title or key (for save/delete)"},
+                "content": {"type": "STRING", "description": "Note content (for save)"},
+                "query": {"type": "STRING", "description": "Search query (for search)"}
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "translate",
+        "description": "Translate text between languages. Supports Hebrew, English, Spanish, French, German, Arabic, Russian, Chinese, Japanese, and more.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "text": {"type": "STRING", "description": "Text to translate"},
+                "target_language": {"type": "STRING", "description": "Target language code or name (e.g. 'he', 'en', 'es', 'hebrew', 'english')"},
+                "source_language": {"type": "STRING", "description": "Source language (auto-detect if omitted)"}
+            },
+            "required": ["text", "target_language"]
+        }
+    },
+    {
+        "name": "news",
+        "description": "Get current news headlines. Optionally filter by topic or country.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "topic": {"type": "STRING", "description": "News topic query (e.g. 'technology', 'sports', 'Israel')"},
+                "max_results": {"type": "INTEGER", "description": "Number of headlines (default 5)"}
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "timer",
+        "description": "Set a countdown timer. When done, shows a notification. Supports minutes or seconds.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "minutes": {"type": "INTEGER", "description": "Timer duration in minutes"},
+                "seconds": {"type": "INTEGER", "description": "Timer duration in seconds (alternative to minutes)"},
+                "label": {"type": "STRING", "description": "Timer label (e.g. 'Pasta timer')"}
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "window_manager",
+        "description": "List open windows, switch to a window, snap/arrange windows, or minimize all.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": "list, switch, snap_left, snap_right, minimize_all, restore_all"
+                },
+                "window_name": {"type": "STRING", "description": "Window title to switch to or snap (partial match)"}
+            },
+            "required": ["action"]
         }
     },
     {
@@ -277,6 +411,24 @@ def execute_tool(name: str, args: dict) -> str:
             return _exec_youtube(args)
         elif name == "reminder":
             return _exec_reminder(args)
+        elif name == "task_manager":
+            return _exec_task_manager(args)
+        elif name == "clipboard_manager":
+            return _exec_clipboard(args)
+        elif name == "process_manager":
+            return _exec_process_manager(args)
+        elif name == "daily_briefing":
+            return _exec_daily_briefing(args)
+        elif name == "notes":
+            return _exec_notes(args)
+        elif name == "translate":
+            return _exec_translate(args)
+        elif name == "news":
+            return _exec_news(args)
+        elif name == "timer":
+            return _exec_timer(args)
+        elif name == "window_manager":
+            return _exec_window_manager(args)
         elif name == "screen_process":
             return _exec_screen_process(args)
         elif name == "computer_control":
@@ -610,33 +762,174 @@ def _exec_youtube(args: dict) -> str:
     return "Specify action: play (with query) or trending."
 
 
+def _parse_future_time(time_str: str, minutes: int = 0) -> float:
+    """Parse a time string into a future unix timestamp."""
+    import re
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+
+    if minutes and minutes > 0:
+        return (now + timedelta(minutes=minutes)).timestamp()
+
+    if not time_str:
+        return (now + timedelta(minutes=5)).timestamp()
+
+    ts = time_str.strip().lower()
+
+    # "tomorrow 14:30" or "tomorrow 2:30 pm"
+    tomorrow = False
+    if "tomorrow" in ts:
+        tomorrow = True
+        ts = ts.replace("tomorrow", "").strip()
+
+    # Try HH:MM or H:MM (24h)
+    m = re.match(r"^(\d{1,2}):(\d{2})$", ts)
+    if m:
+        h, mi = int(m.group(1)), int(m.group(2))
+        target = now.replace(hour=h, minute=mi, second=0, microsecond=0)
+        if tomorrow:
+            target += timedelta(days=1)
+        elif target <= now:
+            target += timedelta(days=1)
+        return target.timestamp()
+
+    # "2:30 PM" / "2:30PM"
+    m = re.match(r"^(\d{1,2}):(\d{2})\s*(am|pm)$", ts)
+    if m:
+        h, mi = int(m.group(1)), int(m.group(2))
+        if m.group(3) == "pm" and h != 12:
+            h += 12
+        elif m.group(3) == "am" and h == 12:
+            h = 0
+        target = now.replace(hour=h, minute=mi, second=0, microsecond=0)
+        if tomorrow:
+            target += timedelta(days=1)
+        elif target <= now:
+            target += timedelta(days=1)
+        return target.timestamp()
+
+    # "in 30 minutes" / "in 2 hours"
+    m = re.match(r"in\s+(\d+)\s+(minute|min|hour|hr|second|sec)s?", ts)
+    if m:
+        val = int(m.group(1))
+        unit = m.group(2)
+        if "hour" in unit or "hr" in unit:
+            return (now + timedelta(hours=val)).timestamp()
+        elif "sec" in unit:
+            return (now + timedelta(seconds=val)).timestamp()
+        else:
+            return (now + timedelta(minutes=val)).timestamp()
+
+    # Fallback: 5 minutes from now
+    return (now + timedelta(minutes=5)).timestamp()
+
+
+def _get_sqlite_store():
+    """Get a shared SQLiteStore instance."""
+    from memory.sqlite_store import SQLiteStore
+    return SQLiteStore("data/jarvis.db")
+
+
 def _exec_reminder(args: dict) -> str:
-    """Set a reminder using Windows toast / simple approach."""
-    message = args.get("message", "Reminder")
+    """Manage reminders: set, list, done — persisted in SQLite."""
+    from datetime import datetime
+    action = args.get("action", "set").lower()
+    message = args.get("message", "")
     minutes = args.get("minutes", 0)
     time_str = args.get("time", "")
+    rem_id = args.get("reminder_id", 0)
 
-    if minutes > 0:
-        # Use a background thread with sleep
-        import threading
-        def _remind():
-            import time
-            time.sleep(minutes * 60)
-            try:
-                # Windows toast notification
-                from tkinter import messagebox
-                import tkinter as tk
-                root = tk.Tk()
-                root.withdraw()
-                messagebox.showinfo("JARVIS Reminder", message)
-                root.destroy()
-            except Exception:
-                logger.info(f"[Reminder] {message}")
+    try:
+        store = _get_sqlite_store()
 
-        threading.Thread(target=_remind, daemon=True).start()
-        return f"Reminder set for {minutes} minutes: {message}"
+        if action == "list":
+            # Get ALL active (not done) reminders
+            rows = store._conn.execute(
+                "SELECT id, text, trigger_at FROM reminders WHERE done = 0 ORDER BY trigger_at"
+            ).fetchall()
+            if not rows:
+                return "No active reminders."
+            lines = []
+            now = datetime.now()
+            for r in rows:
+                rid = r["id"]
+                text = r["text"]
+                trigger = r["trigger_at"]
+                try:
+                    dt = datetime.fromtimestamp(trigger)
+                    time_fmt = dt.strftime("%b %d, %I:%M %p")
+                    if dt < now:
+                        time_fmt += " (OVERDUE)"
+                except Exception:
+                    time_fmt = "unknown time"
+                lines.append(f"  #{rid}: {text} — {time_fmt}")
+            return f"Active reminders ({len(rows)}):\n" + "\n".join(lines)
 
-    return f"Reminder noted: {message}. Specify 'minutes' for a timed reminder."
+        elif action == "done":
+            if not rem_id:
+                return "Please specify reminder_id to mark as done."
+            store.mark_reminder_done(rem_id)
+            return f"Reminder #{rem_id} marked as done."
+
+        elif action == "set":
+            if not message:
+                return "Please specify a message for the reminder."
+            trigger_at = _parse_future_time(time_str, minutes)
+            rid = store.add_reminder(message, trigger_at)
+            dt = datetime.fromtimestamp(trigger_at)
+            time_fmt = dt.strftime("%b %d at %I:%M %p")
+
+            # Also set a background thread for toast notification
+            import threading
+            delay = max(0, trigger_at - datetime.now().timestamp())
+            def _notify():
+                import time as _time
+                _time.sleep(delay)
+                try:
+                    _toast_notification(f"JARVIS Reminder", message)
+                except Exception:
+                    logger.info(f"[Reminder] {message}")
+            threading.Thread(target=_notify, daemon=True).start()
+
+            return f"Reminder #{rid} set for {time_fmt}: {message}"
+
+        else:
+            return f"Unknown reminder action: {action}. Use: set, list, done."
+
+    except Exception as e:
+        return f"Reminder error: {e}"
+
+
+def _toast_notification(title: str, message: str):
+    """Show a Windows toast notification."""
+    try:
+        # Try Windows 10+ toast via PowerShell
+        ps_cmd = (
+            f'[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, '
+            f'ContentType=WindowsRuntime] > $null; '
+            f'$template = [Windows.UI.Notifications.ToastNotificationManager]::'
+            f'GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); '
+            f'$text = $template.GetElementsByTagName("text"); '
+            f'$text[0].AppendChild($template.CreateTextNode("{title}")) > $null; '
+            f'$text[1].AppendChild($template.CreateTextNode("{message}")) > $null; '
+            f'$notifier = [Windows.UI.Notifications.ToastNotificationManager]::'
+            f'CreateToastNotifier("JARVIS"); '
+            f'$notifier.Show([Windows.UI.Notifications.ToastNotification]::new($template))'
+        )
+        subprocess.run(["powershell", "-Command", ps_cmd],
+                       capture_output=True, timeout=10)
+    except Exception:
+        # Fallback: tkinter messagebox
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showinfo(title, message)
+            root.destroy()
+        except Exception:
+            pass
 
 
 def _exec_screen_process(args: dict) -> str:
@@ -691,3 +984,472 @@ def _exec_computer_control(args: dict) -> str:
         return f"Done: {action}"
     except Exception as e:
         return f"Control error: {e}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  NEW TOOLS
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _exec_task_manager(args: dict) -> str:
+    """Manage persistent tasks/to-do list."""
+    from datetime import datetime
+    action = args.get("action", "list").lower()
+    desc = args.get("description", "")
+    due_str = args.get("due", "")
+    task_id = args.get("task_id", 0)
+
+    try:
+        store = _get_sqlite_store()
+
+        if action == "list":
+            tasks = store.get_pending_tasks()
+            if not tasks:
+                return "No pending tasks. All clear, Sir."
+            lines = []
+            for t in tasks:
+                tid = t["id"]
+                d = t["description"]
+                due = t.get("due_at")
+                due_fmt = ""
+                if due:
+                    try:
+                        due_fmt = f" — due {datetime.fromtimestamp(due).strftime('%b %d, %I:%M %p')}"
+                    except Exception:
+                        pass
+                lines.append(f"  #{tid}: {d}{due_fmt}")
+            return f"Pending tasks ({len(tasks)}):\n" + "\n".join(lines)
+
+        elif action == "add":
+            if not desc:
+                return "Please provide a task description."
+            due_at = None
+            if due_str:
+                due_at = _parse_future_time(due_str)
+            tid = store.add_task(desc, due_at)
+            result = f"Task #{tid} added: {desc}"
+            if due_at:
+                result += f" (due {datetime.fromtimestamp(due_at).strftime('%b %d, %I:%M %p')})"
+            return result
+
+        elif action == "complete":
+            if not task_id:
+                return "Please specify task_id to complete."
+            store._conn.execute(
+                "UPDATE tasks SET status = 'completed' WHERE id = ?", (task_id,))
+            store._conn.commit()
+            return f"Task #{task_id} marked as completed."
+
+        elif action == "delete":
+            if not task_id:
+                return "Please specify task_id to delete."
+            store._conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+            store._conn.commit()
+            return f"Task #{task_id} deleted."
+
+        else:
+            return f"Unknown task action: {action}. Use: add, list, complete, delete."
+
+    except Exception as e:
+        return f"Task manager error: {e}"
+
+
+def _exec_clipboard(args: dict) -> str:
+    """Read or write system clipboard."""
+    action = args.get("action", "read").lower()
+    text = args.get("text", "")
+
+    try:
+        if action == "read":
+            result = subprocess.run(
+                ["powershell", "-Command", "Get-Clipboard"],
+                capture_output=True, text=True, timeout=5,
+            )
+            clip = result.stdout.strip()
+            return f"Clipboard contents:\n{clip}" if clip else "Clipboard is empty."
+
+        elif action == "write":
+            if not text:
+                return "No text specified to copy."
+            # Use PowerShell Set-Clipboard
+            subprocess.run(
+                ["powershell", "-Command", f"Set-Clipboard -Value '{text}'"],
+                capture_output=True, timeout=5,
+            )
+            return f"Copied to clipboard: {text[:100]}{'...' if len(text)>100 else ''}"
+
+        return f"Unknown clipboard action: {action}. Use: read, write."
+    except Exception as e:
+        return f"Clipboard error: {e}"
+
+
+def _exec_process_manager(args: dict) -> str:
+    """List, kill, or check running processes."""
+    try:
+        import psutil
+    except ImportError:
+        return "psutil not available."
+
+    action = args.get("action", "list").lower()
+    name = args.get("name", "").lower()
+    sort_by = args.get("sort_by", "memory").lower()
+
+    try:
+        if action == "list":
+            procs = []
+            for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_info"]):
+                try:
+                    info = p.info
+                    mem_mb = (info["memory_info"].rss / (1024 ** 2)) if info["memory_info"] else 0
+                    procs.append({
+                        "pid": info["pid"],
+                        "name": info["name"],
+                        "cpu": info["cpu_percent"] or 0,
+                        "mem": mem_mb,
+                    })
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+
+            if sort_by == "cpu":
+                procs.sort(key=lambda x: x["cpu"], reverse=True)
+            elif sort_by == "name":
+                procs.sort(key=lambda x: x["name"].lower())
+            else:
+                procs.sort(key=lambda x: x["mem"], reverse=True)
+
+            lines = [f"{'PID':>7} {'CPU%':>5} {'MEM MB':>7}  NAME"]
+            for p in procs[:20]:
+                lines.append(f"{p['pid']:>7} {p['cpu']:>5.1f} {p['mem']:>7.1f}  {p['name']}")
+            return f"Top {min(20, len(procs))} processes (sorted by {sort_by}):\n" + "\n".join(lines)
+
+        elif action == "kill":
+            if not name:
+                return "Specify a process name to kill."
+            killed = 0
+            for p in psutil.process_iter(["name"]):
+                try:
+                    if name in p.info["name"].lower():
+                        p.kill()
+                        killed += 1
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            return f"Killed {killed} process(es) matching '{name}'." if killed else f"No process matching '{name}' found."
+
+        elif action == "check":
+            if not name:
+                return "Specify a process name to check."
+            found = []
+            for p in psutil.process_iter(["name", "pid"]):
+                try:
+                    if name in p.info["name"].lower():
+                        found.append(f"{p.info['name']} (PID {p.info['pid']})")
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            if found:
+                return f"Running ({len(found)}):\n" + "\n".join(found[:10])
+            return f"No process matching '{name}' is running."
+
+        return f"Unknown action: {action}. Use: list, kill, check."
+    except Exception as e:
+        return f"Process manager error: {e}"
+
+
+def _exec_daily_briefing(args: dict) -> str:
+    """Generate a comprehensive daily briefing."""
+    from datetime import datetime
+    city = args.get("city", "Tel Aviv")
+
+    sections = []
+
+    # Time
+    now = datetime.now()
+    sections.append(f"Date: {now.strftime('%A, %B %d, %Y')}")
+    sections.append(f"Time: {now.strftime('%I:%M %p')}")
+
+    # Weather
+    try:
+        weather = _exec_weather({"city": city})
+        sections.append(f"Weather: {weather}")
+    except Exception:
+        sections.append("Weather: unavailable")
+
+    # System
+    try:
+        from tools.system_monitor import get_system_summary
+        sections.append(get_system_summary())
+    except Exception:
+        pass
+
+    # Tasks
+    try:
+        store = _get_sqlite_store()
+        tasks = store.get_pending_tasks()
+        if tasks:
+            sections.append(f"Pending tasks ({len(tasks)}):")
+            for t in tasks[:5]:
+                sections.append(f"  - {t['description']}")
+        else:
+            sections.append("No pending tasks.")
+    except Exception:
+        pass
+
+    # Reminders
+    try:
+        store = _get_sqlite_store()
+        rows = store._conn.execute(
+            "SELECT text, trigger_at FROM reminders WHERE done = 0 ORDER BY trigger_at LIMIT 5"
+        ).fetchall()
+        if rows:
+            sections.append(f"Upcoming reminders ({len(rows)}):")
+            for r in rows:
+                try:
+                    dt = datetime.fromtimestamp(r["trigger_at"]).strftime("%I:%M %p")
+                    sections.append(f"  - {r['text']} at {dt}")
+                except Exception:
+                    sections.append(f"  - {r['text']}")
+        else:
+            sections.append("No active reminders.")
+    except Exception:
+        pass
+
+    # News
+    try:
+        news = _exec_news({"topic": "", "max_results": 3})
+        sections.append(f"Headlines:\n{news}")
+    except Exception:
+        pass
+
+    return "\n".join(sections)
+
+
+def _exec_notes(args: dict) -> str:
+    """Persistent notes using SQLite facts table."""
+    action = args.get("action", "list").lower()
+    title = args.get("title", "")
+    content = args.get("content", "")
+    query = args.get("query", "")
+
+    try:
+        store = _get_sqlite_store()
+
+        if action == "save":
+            if not title:
+                return "Please provide a note title."
+            if not content:
+                return "Please provide note content."
+            store.save_fact(f"note:{title}", content, category="notes")
+            return f"Note saved: '{title}'"
+
+        elif action == "list":
+            facts = store.get_facts(category="notes")
+            if not facts:
+                return "No notes saved yet."
+            lines = []
+            for f in facts:
+                key = f["key"].replace("note:", "", 1)
+                val = f["value"]
+                if len(val) > 60:
+                    val = val[:57] + "..."
+                lines.append(f"  - {key}: {val}")
+            return f"Notes ({len(facts)}):\n" + "\n".join(lines)
+
+        elif action == "search":
+            if not query:
+                return "Please provide a search query."
+            facts = store.get_facts(category="notes")
+            matches = [f for f in facts
+                       if query.lower() in f["key"].lower() or query.lower() in f["value"].lower()]
+            if not matches:
+                return f"No notes matching '{query}'."
+            lines = []
+            for f in matches:
+                key = f["key"].replace("note:", "", 1)
+                lines.append(f"  - {key}: {f['value']}")
+            return f"Found {len(matches)} note(s):\n" + "\n".join(lines)
+
+        elif action == "delete":
+            if not title:
+                return "Please specify note title to delete."
+            store._conn.execute("DELETE FROM facts WHERE key = ?", (f"note:{title}",))
+            store._conn.commit()
+            return f"Note '{title}' deleted."
+
+        return f"Unknown notes action: {action}. Use: save, list, search, delete."
+    except Exception as e:
+        return f"Notes error: {e}"
+
+
+def _exec_translate(args: dict) -> str:
+    """Translate text using MyMemory free API."""
+    text = args.get("text", "")
+    target = args.get("target_language", "en").strip().lower()
+    source = args.get("source_language", "").strip().lower()
+
+    if not text:
+        return "No text to translate."
+
+    # Map common names to codes
+    lang_map = {
+        "english": "en", "hebrew": "he", "spanish": "es", "french": "fr",
+        "german": "de", "arabic": "ar", "russian": "ru", "chinese": "zh",
+        "japanese": "ja", "korean": "ko", "portuguese": "pt", "italian": "it",
+        "dutch": "nl", "turkish": "tr", "polish": "pl", "swedish": "sv",
+        "hindi": "hi", "thai": "th",
+    }
+    target = lang_map.get(target, target)
+    source = lang_map.get(source, source) if source else ""
+
+    try:
+        import httpx
+        import urllib.parse
+
+        lang_pair = f"{source or 'auto'}|{target}"
+        url = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text[:500])}&langpair={lang_pair}"
+        resp = httpx.get(url, timeout=10).json()
+
+        translated = resp.get("responseData", {}).get("translatedText", "")
+        if translated:
+            return f"Translation ({source or 'auto'} → {target}): {translated}"
+        return "Translation failed — no result."
+    except Exception as e:
+        return f"Translation error: {e}"
+
+
+def _exec_news(args: dict) -> str:
+    """Fetch news headlines via DuckDuckGo news search."""
+    topic = args.get("topic", "")
+    max_results = args.get("max_results", 5)
+
+    query = topic or "top news today"
+
+    try:
+        from ddgs import DDGS
+        results = DDGS().news(query, max_results=max_results, region="wt-wt")
+        if not results:
+            return f"No news found for: {query}"
+        lines = []
+        for i, r in enumerate(results, 1):
+            title = r.get("title", "")
+            source = r.get("source", "")
+            date = r.get("date", "")[:10]
+            body = r.get("body", "")[:100]
+            lines.append(f"{i}. [{source}] {title}")
+            if body:
+                lines.append(f"   {body}...")
+        return "\n".join(lines)
+    except ImportError:
+        # Fallback to web search
+        return _exec_web_search({"query": f"{query} news", "max_results": max_results})
+    except Exception as e:
+        return f"News error: {e}"
+
+
+def _exec_timer(args: dict) -> str:
+    """Set a countdown timer with notification."""
+    import threading
+
+    minutes = args.get("minutes", 0)
+    seconds = args.get("seconds", 0)
+    label = args.get("label", "Timer")
+
+    total_seconds = (minutes * 60) + seconds
+    if total_seconds <= 0:
+        return "Please specify minutes or seconds for the timer."
+
+    def _countdown():
+        import time as _t
+        _t.sleep(total_seconds)
+        try:
+            _toast_notification("JARVIS Timer", f"{label}: Time's up!")
+        except Exception:
+            logger.info(f"[Timer] {label}: Time's up!")
+
+    threading.Thread(target=_countdown, daemon=True).start()
+
+    if minutes > 0 and seconds > 0:
+        return f"Timer set: {label} — {minutes}m {seconds}s"
+    elif minutes > 0:
+        return f"Timer set: {label} — {minutes} minute{'s' if minutes != 1 else ''}"
+    else:
+        return f"Timer set: {label} — {seconds} second{'s' if seconds != 1 else ''}"
+
+
+def _exec_window_manager(args: dict) -> str:
+    """Manage open windows on Windows."""
+    import ctypes
+    import ctypes.wintypes
+
+    action = args.get("action", "list").lower()
+    target = args.get("window_name", "").lower()
+
+    try:
+        if action == "minimize_all":
+            subprocess.run(
+                ["powershell", "-Command",
+                 "(New-Object -ComObject Shell.Application).MinimizeAll()"],
+                capture_output=True, timeout=5,
+            )
+            return "All windows minimized."
+
+        elif action == "restore_all":
+            subprocess.run(
+                ["powershell", "-Command",
+                 "(New-Object -ComObject Shell.Application).UndoMinimizeAll()"],
+                capture_output=True, timeout=5,
+            )
+            return "All windows restored."
+
+        elif action == "list":
+            result = subprocess.run(
+                ["powershell", "-Command",
+                 "Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | "
+                 "Select-Object Id, MainWindowTitle | Format-Table -AutoSize | Out-String"],
+                capture_output=True, text=True, timeout=10,
+            )
+            output = result.stdout.strip()
+            return f"Open windows:\n{output}" if output else "No visible windows found."
+
+        elif action == "switch":
+            if not target:
+                return "Specify window_name to switch to."
+            # Find and activate window using PowerShell
+            ps = (
+                f"$proc = Get-Process | Where-Object {{$_.MainWindowTitle -like '*{target}*'}} | "
+                f"Select-Object -First 1; "
+                f"if ($proc) {{ "
+                f"  $sig = '[DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr hWnd);'; "
+                f"  Add-Type -MemberDefinition $sig -Name NativeMethods -Namespace Win32; "
+                f"  [Win32.NativeMethods]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null; "
+                f"  Write-Output \"Switched to: $($proc.MainWindowTitle)\""
+                f"}} else {{ Write-Output 'Window not found.' }}"
+            )
+            result = subprocess.run(
+                ["powershell", "-Command", ps],
+                capture_output=True, text=True, timeout=10,
+            )
+            return result.stdout.strip() or "Window not found."
+
+        elif action in ("snap_left", "snap_right"):
+            if not target and action.startswith("snap"):
+                # Snap current window
+                import pyautogui
+                if action == "snap_left":
+                    pyautogui.hotkey("win", "left")
+                else:
+                    pyautogui.hotkey("win", "right")
+                return f"Snapped window {action.replace('snap_', '')}."
+
+            # First switch, then snap
+            _exec_window_manager({"action": "switch", "window_name": target})
+            import time
+            time.sleep(0.3)
+            import pyautogui
+            if action == "snap_left":
+                pyautogui.hotkey("win", "left")
+            else:
+                pyautogui.hotkey("win", "right")
+            return f"Snapped '{target}' to the {action.replace('snap_', '')}."
+
+        return f"Unknown action: {action}. Use: list, switch, snap_left, snap_right, minimize_all, restore_all."
+    except Exception as e:
+        return f"Window manager error: {e}"

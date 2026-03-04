@@ -64,6 +64,8 @@ class GeminiLive:
         self.on_user_text = on_user_text or (lambda t: None) # User transcript
         self.on_audio_level = on_audio_level or (lambda l: None)
         self.on_auth_error: Optional[Callable[[str], None]] = None  # Auth failure callback
+        self.on_tool_start: Optional[Callable[[str], None]] = None  # Tool execution start
+        self.on_tool_end: Optional[Callable[[str], None]] = None    # Tool execution end
 
         self.client: Optional[genai.Client] = None
         self.session = None
@@ -292,12 +294,17 @@ class GeminiLive:
                             name = fc.name
                             args = dict(fc.args) if fc.args else {}
                             logger.info(f"[GeminiLive] Tool call: {name}({args})")
+                            if self.on_tool_start:
+                                self.on_tool_start(name)
                             try:
                                 # Run in thread to avoid blocking asyncio loop
                                 # (Playwright sync API fails inside asyncio)
                                 result = await asyncio.to_thread(execute_tool, name, args)
                             except Exception as e:
                                 result = f"Tool error: {e}"
+                            finally:
+                                if self.on_tool_end:
+                                    self.on_tool_end(name)
                             function_responses.append(
                                 types.FunctionResponse(
                                     id=fc.id,

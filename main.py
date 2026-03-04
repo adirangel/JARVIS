@@ -51,6 +51,10 @@ def start_gemini(api_key: str, gui: JarvisGUI):
     # On auth failure, show API key screen again
     engine.on_auth_error = lambda msg: gui.show_api_key_screen(msg)
 
+    # Tool execution tracking for Mission Control
+    engine.on_tool_start = lambda name: gui.set_active_tool(name)
+    engine.on_tool_end = lambda name: gui.clear_active_tool(name)
+
     # Wire memory (optional — if memory module is available)
     try:
         from memory.long_term import LongTermMemory
@@ -98,8 +102,11 @@ def start_gemini(api_key: str, gui: JarvisGUI):
                     logger.error(f"[Memory] Save error: {e}")
 
         engine.save_memory = save_mem
+        gui.set_subagent_status("Memory", "active", "Long-term memory connected")
+        gui.log_activity("Long-term memory module loaded", "system")
         logger.info("[Memory] Long-term memory connected.")
     except Exception as e:
+        gui.set_subagent_status("Memory", "idle", "Not available")
         logger.warning(f"[Memory] Not available: {e}")
 
     # Text input from GUI → send to Gemini
