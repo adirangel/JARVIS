@@ -113,6 +113,7 @@ class MemoryManager:
                         cache_recent=chroma_cache_recent,
                         max_cache_size=chroma_cache_size,
                         sqlite_store=self._sqlite,
+                        embed_fn=embed_fn,
                     )
                     logger.info("VectorStore initialised")
                 except Exception as e:

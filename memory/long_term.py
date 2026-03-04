@@ -11,7 +11,7 @@ from memory.manager import MemoryManager
 class LongTermMemory:
     """Persistent memory: facts (SQLite) + semantic search (ChromaDB) + user profile."""
 
-    def __init__(self, config: Optional[Dict[str, Any]] = None, llm_fn: Optional[Callable] = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None, llm_fn: Optional[Callable] = None, embed_fn=None):
         config = config or {}
         mem_cfg = config.get("memory", config)
         self._manager = MemoryManager(
@@ -24,6 +24,7 @@ class LongTermMemory:
             chroma_cache_size=mem_cfg.get("chroma_cache_size", 50),
             use_vector_store=True,
             llm_fn=llm_fn,
+            embed_fn=embed_fn,
         )
 
     @property
