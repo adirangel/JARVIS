@@ -116,6 +116,52 @@ def start_gemini(api_key: str, gui: JarvisGUI):
 
     gui.on_text_input(on_text)
 
+    # ── Agent Manager setup ───────────────────────────────────────────────────
+    try:
+        from agent.agent_manager import AgentManager
+
+        agent_mgr = AgentManager()
+
+        # When an agent's status changes → update the GUI panels
+        def _on_agent_status(name: str, status: str, desc: str):
+            gui.set_subagent_status(f"Agent:{name}", status, desc)
+            gui.log_agent_activity(name, desc, "ok" if status == "completed" else ("error" if status == "failed" else "info"))
+            if status == "running":
+                gui.log_activity(f"Agent '{name}' started", "agent")
+            elif status == "completed":
+                gui.log_activity(f"Agent '{name}' completed", "agent")
+            elif status == "failed":
+                gui.log_activity(f"Agent '{name}' failed: {desc[:50]}", "agent")
+
+        agent_mgr.on_agent_status = _on_agent_status
+
+        # When an agent reports a result → send it to JARVIS via Gemini session
+        def _on_agent_result(agent_name: str, result: str):
+            if _loop and engine.session:
+                msg = (
+                    f"[Agent Report] Agent '{agent_name}' has completed its task. "
+                    f"Result: {result[:2000]}"
+                )
+                asyncio.run_coroutine_threadsafe(
+                    engine.send_text(msg), _loop
+                )
+                gui.log_activity(f"Agent '{agent_name}' reported result", "agent")
+
+        agent_mgr.on_agent_result = _on_agent_result
+
+        # Wire live progress updates from agents
+        def _on_agent_progress(agent_name: str, message: str):
+            gui.log_agent_activity(agent_name, message, "info")
+
+        agent_mgr.on_agent_progress = _on_agent_progress
+
+        gui.set_subagent_status("Agents", "active", "Agent manager ready")
+        gui.log_activity("Multi-agent system loaded", "system")
+        logger.info("[Agents] Agent manager connected.")
+    except Exception as e:
+        gui.set_subagent_status("Agents", "idle", "Not available")
+        logger.warning(f"[Agents] Not available: {e}")
+
     def _run():
         global _loop
         _loop = asyncio.new_event_loop()
