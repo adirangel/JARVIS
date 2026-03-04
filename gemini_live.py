@@ -10,6 +10,7 @@ import asyncio
 import base64
 import json
 import struct
+import time
 import traceback
 from typing import Any, Callable, Optional
 
@@ -23,6 +24,17 @@ from google.genai import types
 from tool_registry import TOOL_DECLARATIONS, execute_tool
 from agent.personality import JARVIS_SYSTEM_PROMPT
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _is_session_closed(exc: Exception) -> bool:
+    """Return True if the exception indicates the WebSocket was closed."""
+    msg = str(exc).lower()
+    return any(kw in msg for kw in ("1008", "1006", "1001", "1011",
+                                     "policy violation", "internal error",
+                                     "received 100", "connection closed",
+                                     "not implemented", "thread was cancelled"))
+
+
 # ── Audio constants ───────────────────────────────────────────────────────────
 INPUT_SAMPLE_RATE = 16000
 OUTPUT_SAMPLE_RATE = 24000
@@ -31,7 +43,7 @@ FORMAT = pyaudio.paInt16
 CHANNELS = 1
 
 # ── Gemini model ──────────────────────────────────────────────────────────────
-LIVE_MODEL = "models/gemini-2.5-flash-native-audio-latest"
+LIVE_MODEL = "models/gemini-2.5-flash-native-audio-preview-12-2025"
 
 # ── System prompt with tool routing rules ─────────────────────────────────────
 SYSTEM_PROMPT = (
@@ -43,7 +55,24 @@ SYSTEM_PROMPT = (
     "- After tool execution, describe what happened conversationally.\n"
     "- If multiple tools are needed, call them sequentially.\n"
     "- For ambiguous requests, prefer the most likely intended tool.\n"
-    "- Never say you can't do something if a tool exists for it.\n"
+    "- Never say you can't do something if a tool exists for it.\n\n"
+    "## Script Execution Rules:\n"
+    "- When asked to run/execute a file or script, use code_helper with action 'run'.\n"
+    "- The script will run in a visible way and return its output.\n"
+    "- For long-running scripts (servers, watchers), use action 'run_background' which opens a persistent terminal.\n"
+    "- NEVER say you're running something 'in the background' silently — always use visible execution.\n"
+    "- When using cmd_control and the user should see the output, set visible=true.\n\n"
+    "## Multi-Agent System:\n"
+    "- You can spawn background agents using 'spawn_agent' for parallel/long-running tasks.\n"
+    "- Agents run independently and report results back to you automatically.\n"
+    "- Use agents for: monitoring, research, running scripts, parallel tasks.\n"
+    "- Agent types: 'command' (shell command), 'script' (run a file), 'monitor' (periodic check), "
+    "'research' (web search), 'tool' (use a JARVIS tool), 'multi_step' (sequential steps).\n"
+    "- Agents can message each other via 'agent_message' — use this for coordinated tasks.\n"
+    "- Check agent progress with 'agent_status', get full results with 'agent_result'.\n"
+    "- When an agent reports back, summarize its findings conversationally.\n"
+    "- The user can ask to spawn as many agents as needed, each doing different work.\n"
+    "- Example: 'spawn an agent to research AI news while another monitors CPU usage'.\n"
 )
 
 
@@ -73,6 +102,12 @@ class GeminiLive:
         self._audio_out_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._audio_in_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._is_speaking = False  # True while JARVIS audio is playing
+        self._session_alive = False  # True while WebSocket is healthy
+
+        # Echo suppression
+        self._mic_level: float = 0.0          # Current mic RMS level (0..1)
+        self._echo_threshold: float = 0.15    # Mic level must exceed this during playback to count as real speech
+        self._silence_after_speak: float = 0.0  # Timestamp when JARVIS stopped speaking
 
         # PyAudio
         self._pa: Optional[pyaudio.PyAudio] = None
@@ -120,6 +155,7 @@ class GeminiLive:
                     model=LIVE_MODEL, config=config
                 ) as session:
                     self.session = session
+                    self._session_alive = True
                     logger.info("[GeminiLive] Connected! Starting audio tasks...")
                     self.on_status("ONLINE")
 
@@ -131,9 +167,15 @@ class GeminiLive:
 
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                err_str = str(e)
-                logger.error(f"[GeminiLive] Session error: {e}\n{traceback.format_exc()}")
+            except BaseException as eg:
+                self._session_alive = False
+                self.session = None
+                # TaskGroup wraps errors in ExceptionGroup
+                if isinstance(eg, ExceptionGroup):
+                    err_str = str(eg.exceptions[0]) if eg.exceptions else str(eg)
+                else:
+                    err_str = str(eg)
+                logger.error(f"[GeminiLive] Session error: {err_str}")
 
                 # Don't retry on authentication errors
                 if any(msg in err_str for msg in ("API key not valid", "PERMISSION_DENIED", "UNAUTHENTICATED", "is not found for API version", "not supported for bidiGenera")):
@@ -171,40 +213,61 @@ class GeminiLive:
         self.on_status("LISTENING")
 
         loop = asyncio.get_event_loop()
-        while self._running:
+        while self._running and self._session_alive:
             try:
                 data = await loop.run_in_executor(
                     None, self._input_stream.read, CHUNK_SIZE, False
                 )
                 await self._audio_in_queue.put(data)
-                # Calc audio level for visualizer
+                # Calc audio level for visualizer + echo suppression
                 try:
                     samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
                     level = float(np.sqrt(np.mean(samples ** 2)) / 32768.0)
+                    self._mic_level = level
                     self.on_audio_level(level)
                 except Exception:
                     pass
             except OSError:
+                if not self._session_alive:
+                    break
                 await asyncio.sleep(0.05)
             except Exception as e:
+                if not self._session_alive:
+                    break
                 logger.error(f"[GeminiLive] Mic error: {e}")
                 await asyncio.sleep(0.1)
 
     # ── Send audio to Gemini ──────────────────────────────────────────────────
 
     async def _send_realtime(self):
-        """Stream microphone audio to Gemini session."""
-        while self._running:
+        """Stream microphone audio to Gemini session.
+
+        Echo suppression: while JARVIS is speaking (or within 0.3s after),
+        only forward audio that is loud enough to be a genuine user
+        interruption, not speaker bleed-through.
+        """
+        while self._running and self._session_alive:
             try:
                 data = await asyncio.wait_for(
                     self._audio_in_queue.get(), timeout=0.1
                 )
+
+                # ── Echo gate ─────────────────────────────────────────
+                if self._is_speaking or (time.time() - self._silence_after_speak < 0.3):
+                    # During playback: only let through genuinely loud input
+                    if self._mic_level < self._echo_threshold:
+                        continue  # swallow this chunk — it's echo
+
                 await self.session.send_realtime_input(
                     media=types.Blob(data=data, mime_type="audio/pcm")
                 )
             except asyncio.TimeoutError:
                 continue
             except Exception as e:
+                if _is_session_closed(e):
+                    logger.warning("[GeminiLive] Session closed, send task exiting.")
+                    self._session_alive = False
+                    break
                 logger.error(f"[GeminiLive] Send error: {e}")
                 await asyncio.sleep(0.1)
 
@@ -218,6 +281,7 @@ class GeminiLive:
             except asyncio.QueueEmpty:
                 break
         self._is_speaking = False
+        self._silence_after_speak = time.time()
 
     async def _receive_audio(self):
         """Process Gemini responses: audio data, transcriptions, tool calls."""
@@ -267,6 +331,7 @@ class GeminiLive:
                         # Turn complete
                         if server_content.turn_complete:
                             self._is_speaking = False
+                            self._silence_after_speak = time.time()
                             self.on_status("LISTENING")
                             # Finish display lines — user first, then jarvis
                             if current_user_text.strip() and self.on_user_turn_complete:
@@ -319,6 +384,10 @@ class GeminiLive:
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                if _is_session_closed(e):
+                    logger.warning("[GeminiLive] Session closed, receive task exiting.")
+                    self._session_alive = False
+                    break
                 logger.error(f"[GeminiLive] Receive error: {e}")
                 await asyncio.sleep(0.1)
 
@@ -335,7 +404,7 @@ class GeminiLive:
         )
         loop = asyncio.get_event_loop()
 
-        while self._running:
+        while self._running and self._session_alive:
             try:
                 data = await asyncio.wait_for(
                     self._audio_out_queue.get(), timeout=0.1
@@ -344,6 +413,8 @@ class GeminiLive:
             except asyncio.TimeoutError:
                 continue
             except Exception as e:
+                if not self._session_alive:
+                    break
                 logger.error(f"[GeminiLive] Play error: {e}")
                 await asyncio.sleep(0.1)
 

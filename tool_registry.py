@@ -156,24 +156,36 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "cmd_control",
-        "description": "Execute a system command (CMD/PowerShell). Use for: check disk, list processes, system info, network, etc.",
+        "description": (
+            "Execute a system command (CMD/PowerShell). Use for: check disk, list processes, system info, network, etc. "
+            "Set visible=true to run in a new visible terminal window the user can see."
+        ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "command": {"type": "STRING", "description": "The command to execute (e.g. 'ipconfig', 'tasklist', 'dir C:\\\\')"}
+                "command": {"type": "STRING", "description": "The command to execute (e.g. 'ipconfig', 'tasklist', 'dir C:\\\\')"},
+                "visible": {"type": "BOOLEAN", "description": "If true, runs in a new visible terminal window. Default false."}
             },
             "required": ["command"]
         }
     },
     {
         "name": "code_helper",
-        "description": "Write, edit, explain, or run code. Creates/modifies files and executes scripts.",
+        "description": (
+            "Write, edit, explain, or run code. Creates/modifies files and executes scripts. "
+            "'run' executes in a visible terminal so user sees the output. "
+            "'run_background' opens a persistent terminal window for long-running scripts."
+        ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "action": {
                     "type": "STRING",
-                    "description": "write (create file), edit (modify file), run (execute script), explain (describe code)"
+                    "description": (
+                        "write (create file), edit (modify file), run (execute and show output), "
+                        "run_background (run in visible terminal that stays open), "
+                        "read (read file), explain (describe code)"
+                    )
                 },
                 "file_path": {"type": "STRING", "description": "Path to the code file"},
                 "code": {"type": "STRING", "description": "Code content (for write action)"},
@@ -377,6 +389,146 @@ TOOL_DECLARATIONS = [
             "required": ["action"]
         }
     },
+    # ── Agent management tools ────────────────────────────────────────────────
+    {
+        "name": "spawn_agent",
+        "description": (
+            "Spawn a new background agent to work on a task independently. "
+            "The agent runs in the background and reports results back. "
+            "Use this when the user asks for long-running tasks, parallel work, "
+            "monitoring, research, or anything that should run independently. "
+            "Types: 'command' (run a command), 'script' (run a file), "
+            "'monitor' (watch something periodically), 'research' (web search), "
+            "'tool' (use a JARVIS tool), 'multi_step' (sequential steps), 'general' (auto-detect)."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "name": {
+                    "type": "STRING",
+                    "description": "Agent name (e.g. 'researcher', 'cpu-monitor', 'code-runner')"
+                },
+                "task": {
+                    "type": "STRING",
+                    "description": "Description of what the agent should do"
+                },
+                "task_type": {
+                    "type": "STRING",
+                    "description": "Task type: command, script, monitor, research, tool, multi_step, general"
+                },
+                "command": {
+                    "type": "STRING",
+                    "description": "Command to execute (for command/monitor types)"
+                },
+                "file_path": {
+                    "type": "STRING",
+                    "description": "Script file to run (for script type)"
+                },
+                "query": {
+                    "type": "STRING",
+                    "description": "Search query (for research type)"
+                },
+                "tool_name": {
+                    "type": "STRING",
+                    "description": "Tool to execute (for tool type)"
+                },
+                "tool_args": {
+                    "type": "STRING",
+                    "description": "JSON string of tool arguments (for tool type)"
+                },
+                "interval_seconds": {
+                    "type": "INTEGER",
+                    "description": "Check interval in seconds (for monitor type, default 10)"
+                },
+                "visible": {
+                    "type": "BOOLEAN",
+                    "description": "If true, run script in a visible terminal window"
+                }
+            },
+            "required": ["name", "task"]
+        }
+    },
+    {
+        "name": "agent_status",
+        "description": "Check the status of spawned agents. Shows all agents if no name specified, or detailed info for one agent.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "name": {
+                    "type": "STRING",
+                    "description": "Agent name to check (omit for all agents)"
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "agent_result",
+        "description": "Get the full result/output of a completed agent.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "name": {
+                    "type": "STRING",
+                    "description": "Agent name to get result from"
+                }
+            },
+            "required": ["name"]
+        }
+    },
+    {
+        "name": "stop_agent",
+        "description": "Stop a running agent.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "name": {
+                    "type": "STRING",
+                    "description": "Agent name to stop"
+                }
+            },
+            "required": ["name"]
+        }
+    },
+    {
+        "name": "agent_message",
+        "description": (
+            "Send a message between agents. Agents can communicate with each other. "
+            "Use recipient 'all' to broadcast to all agents."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "sender": {
+                    "type": "STRING",
+                    "description": "Sender name (agent name or 'jarvis')"
+                },
+                "recipient": {
+                    "type": "STRING",
+                    "description": "Recipient agent name, or 'all' for broadcast"
+                },
+                "message": {
+                    "type": "STRING",
+                    "description": "Message content"
+                }
+            },
+            "required": ["recipient", "message"]
+        }
+    },
+    {
+        "name": "remove_agent",
+        "description": "Remove a stopped or completed agent from the registry.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "name": {
+                    "type": "STRING",
+                    "description": "Agent name to remove"
+                }
+            },
+            "required": ["name"]
+        }
+    },
 ]
 
 
@@ -433,6 +585,19 @@ def execute_tool(name: str, args: dict) -> str:
             return _exec_screen_process(args)
         elif name == "computer_control":
             return _exec_computer_control(args)
+        # Agent management
+        elif name == "spawn_agent":
+            return _exec_spawn_agent(args)
+        elif name == "agent_status":
+            return _exec_agent_status(args)
+        elif name == "agent_result":
+            return _exec_agent_result(args)
+        elif name == "stop_agent":
+            return _exec_stop_agent(args)
+        elif name == "agent_message":
+            return _exec_agent_message(args)
+        elif name == "remove_agent":
+            return _exec_remove_agent(args)
         else:
             return f"Unknown tool: {name}"
 
@@ -690,12 +855,23 @@ def _exec_file_controller(args: dict) -> str:
 def _exec_cmd(args: dict) -> str:
     """Execute a system command."""
     command = args.get("command", "")
+    visible = args.get("visible", False)
     if not command:
         return "No command specified."
     # Safety: block obviously dangerous commands
     dangerous = ["format", "del /s", "rd /s", "rm -rf"]
     if any(d in command.lower() for d in dangerous):
         return f"Blocked dangerous command: {command}"
+
+    if visible and platform.system() == "Windows":
+        # Run in a visible terminal window
+        try:
+            full_cmd = f'start "JARVIS Command" cmd /k "{command}"'
+            subprocess.Popen(full_cmd, shell=True)
+            return f"Running in visible terminal: {command}"
+        except Exception as e:
+            return f"Failed to open visible terminal: {e}"
+
     try:
         result = subprocess.run(
             command, shell=True, capture_output=True, text=True, timeout=30
@@ -725,17 +901,11 @@ def _exec_code_helper(args: dict) -> str:
     elif action == "run":
         if not file_path:
             return "Need file_path to run."
-        runners = {
-            "python": ["python", file_path],
-            "javascript": ["node", file_path],
-            "typescript": ["npx", "ts-node", file_path],
-        }
-        cmd = runners.get(language, ["python", file_path])
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            return (result.stdout or "") + (result.stderr or "") or "(no output)"
-        except Exception as e:
-            return f"Run error: {e}"
+        return _run_script_visible(file_path, language, background=False)
+    elif action == "run_background":
+        if not file_path:
+            return "Need file_path to run."
+        return _run_script_visible(file_path, language, background=True)
     elif action == "read" or action == "explain":
         if file_path and os.path.exists(file_path):
             with open(file_path, "r", encoding="utf-8") as f:
@@ -744,6 +914,93 @@ def _exec_code_helper(args: dict) -> str:
     elif action == "edit":
         return f"To edit {file_path}: {args.get('explanation', 'No edit instructions provided')}"
     return f"Unknown code action: {action}"
+
+
+def _run_script_visible(file_path: str, language: str = "python", background: bool = False) -> str:
+    """Run a script in a visible terminal window so the user can see output.
+
+    If background=False, waits for completion and captures output.
+    If background=True, opens a persistent terminal that stays open.
+    """
+    if not os.path.exists(file_path):
+        return f"File not found: {file_path}"
+
+    abs_path = os.path.abspath(file_path)
+    work_dir = os.path.dirname(abs_path)
+
+    runners = {
+        "python": f'python "{abs_path}"',
+        "javascript": f'node "{abs_path}"',
+        "typescript": f'npx ts-node "{abs_path}"',
+        "batch": f'"{abs_path}"',
+        "powershell": f'powershell -File "{abs_path}"',
+    }
+    # Auto-detect language from extension if not specified
+    ext = os.path.splitext(file_path)[1].lower()
+    ext_map = {".py": "python", ".js": "javascript", ".ts": "typescript",
+               ".bat": "batch", ".cmd": "batch", ".ps1": "powershell"}
+    if language == "python" and ext in ext_map:
+        language = ext_map[ext]
+
+    run_cmd = runners.get(language, f'python "{abs_path}"')
+
+    if platform.system() == "Windows":
+        if background:
+            # Open a new visible console that stays open
+            full_cmd = f'start "JARVIS Script" cmd /k "cd /d {work_dir} && {run_cmd}"'
+            subprocess.Popen(full_cmd, shell=True)
+            return f"Launched in visible terminal: {file_path}\nThe script is running in a new window."
+        else:
+            # Run in a new visible console, capture output, window stays for 3s then closes
+            # But ALSO capture output back to JARVIS
+            try:
+                result = subprocess.run(
+                    run_cmd, shell=True, capture_output=True, text=True,
+                    timeout=60, cwd=work_dir
+                )
+                output = (result.stdout or "") + (result.stderr or "")
+                output = output.strip()
+
+                # Also show in a visible terminal if there's meaningful output
+                if output:
+                    # Open notepad-style popup or terminal with output
+                    _show_script_output(file_path, output)
+
+                return output or "(script completed with no output)"
+            except subprocess.TimeoutExpired:
+                return "Script timed out after 60 seconds. Use run_background for long-running scripts."
+            except Exception as e:
+                return f"Run error: {e}"
+    else:
+        # Linux/Mac
+        try:
+            result = subprocess.run(
+                run_cmd, shell=True, capture_output=True, text=True,
+                timeout=60, cwd=work_dir
+            )
+            output = (result.stdout or "") + (result.stderr or "")
+            return output.strip() or "(script completed with no output)"
+        except Exception as e:
+            return f"Run error: {e}"
+
+
+def _show_script_output(file_path: str, output: str):
+    """Show script output in a visible window so the user can see it."""
+    try:
+        # Create a temp file with the output and show it
+        import tempfile
+        out_file = os.path.join(tempfile.gettempdir(), "jarvis_script_output.txt")
+        with open(out_file, "w", encoding="utf-8") as f:
+            f.write(f"=== JARVIS Script Output: {file_path} ===\n")
+            f.write(f"{'=' * 50}\n\n")
+            f.write(output)
+            f.write(f"\n\n{'=' * 50}\n")
+            f.write("Script finished.\n")
+        # Open in default text viewer
+        if platform.system() == "Windows":
+            subprocess.Popen(["notepad", out_file])
+    except Exception as e:
+        logger.warning(f"Could not show script output: {e}")
 
 
 def _exec_youtube(args: dict) -> str:
@@ -1453,3 +1710,96 @@ def _exec_window_manager(args: dict) -> str:
         return f"Unknown action: {action}. Use: list, switch, snap_left, snap_right, minimize_all, restore_all."
     except Exception as e:
         return f"Window manager error: {e}"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  AGENT MANAGEMENT TOOLS
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _get_agent_manager():
+    """Get the singleton AgentManager instance."""
+    from agent.agent_manager import AgentManager
+    return AgentManager()
+
+
+def _exec_spawn_agent(args: dict) -> str:
+    """Spawn a new background agent."""
+    name = args.get("name", "").strip()
+    task = args.get("task", "").strip()
+    task_type = args.get("task_type", "general").strip().lower()
+
+    if not name:
+        return "Agent name is required."
+    if not task:
+        return "Task description is required."
+
+    # Build params from the various optional fields
+    params = {}
+    if args.get("command"):
+        params["command"] = args["command"]
+    if args.get("file_path"):
+        params["file_path"] = args["file_path"]
+    if args.get("query"):
+        params["query"] = args["query"]
+    if args.get("tool_name"):
+        params["tool_name"] = args["tool_name"]
+    if args.get("tool_args"):
+        try:
+            params["tool_args"] = json.loads(args["tool_args"])
+        except (json.JSONDecodeError, TypeError):
+            params["tool_args"] = {}
+    if args.get("interval_seconds"):
+        params["interval_seconds"] = int(args["interval_seconds"])
+    if args.get("visible"):
+        params["visible"] = args["visible"]
+
+    mgr = _get_agent_manager()
+    return mgr.spawn_agent(name, task, task_type, params)
+
+
+def _exec_agent_status(args: dict) -> str:
+    """Get agent status."""
+    name = args.get("name", "")
+    mgr = _get_agent_manager()
+    return mgr.get_agent_status(name)
+
+
+def _exec_agent_result(args: dict) -> str:
+    """Get agent result."""
+    name = args.get("name", "")
+    if not name:
+        return "Agent name is required."
+    mgr = _get_agent_manager()
+    return mgr.get_agent_result(name)
+
+
+def _exec_stop_agent(args: dict) -> str:
+    """Stop a running agent."""
+    name = args.get("name", "")
+    if not name:
+        return "Agent name is required."
+    mgr = _get_agent_manager()
+    return mgr.stop_agent(name)
+
+
+def _exec_agent_message(args: dict) -> str:
+    """Send message between agents."""
+    sender = args.get("sender", "jarvis")
+    recipient = args.get("recipient", "")
+    message = args.get("message", "")
+    if not recipient:
+        return "Recipient agent name is required."
+    if not message:
+        return "Message content is required."
+    mgr = _get_agent_manager()
+    return mgr.send_message(sender, recipient, message)
+
+
+def _exec_remove_agent(args: dict) -> str:
+    """Remove an agent."""
+    name = args.get("name", "")
+    if not name:
+        return "Agent name is required."
+    mgr = _get_agent_manager()
+    return mgr.remove_agent(name)

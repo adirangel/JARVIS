@@ -75,6 +75,11 @@ TASK_DONE = "#00e676"
 REMINDER_COLOR = "#ce93d8"
 SUBAGENT_ACTIVE = "#00e676"
 SUBAGENT_IDLE = "#37474f"
+AGENT_RUNNING = "#4fc3f7"
+AGENT_COMPLETED = "#00e676"
+AGENT_FAILED = "#ff5252"
+AGENT_STOPPED = "#78909c"
+AGENT_PANEL_BG = "#081018"
 
 CONFIG_PATH = os.path.join("config", "api_keys.json")
 
@@ -109,7 +114,7 @@ class JarvisGUI:
 
         # Activity log entries: list of (timestamp, message, category)
         self._activity_log: list[tuple[float, str, str]] = []
-        # Sub-agents registry
+        # Sub-agents registry (system modules only)
         self._subagents: dict[str, dict] = {
             "Memory": {"status": "idle", "desc": "Long-term memory & recall"},
             "Tools": {"status": "idle", "desc": "Tool execution engine"},
@@ -117,6 +122,8 @@ class JarvisGUI:
             "Browser": {"status": "idle", "desc": "Web browser control"},
             "System": {"status": "idle", "desc": "System monitor & control"},
         }
+        # User-spawned agents (separate from system modules)
+        self._user_agents: dict[str, dict] = {}
         self._active_tools: list[str] = []
         self._tasks: list[dict] = []
         self._reminders: list[dict] = []
@@ -375,12 +382,40 @@ class JarvisGUI:
         self._gpu_label.pack(anchor="w")
         self._detect_gpu()
 
-        # Sub-agents
-        self._panel_header(parent, "\u25c8  SUB-AGENTS")
+        # Sub-agents (system modules)
+        self._panel_header(parent, "\u25c8  SYSTEM MODULES")
         self._agents_frame = tk.Frame(parent, bg=PANEL_COLOR, highlightthickness=1,
                                       highlightbackground=BORDER_COLOR)
         self._agents_frame.pack(fill="x", pady=(0, 6))
         self._refresh_subagents()
+
+        # User-spawned agents
+        self._panel_header(parent, "\u2726  LIVE AGENTS")
+        self._user_agents_frame = tk.Frame(parent, bg=PANEL_COLOR, highlightthickness=1,
+                                           highlightbackground=BORDER_COLOR)
+        self._user_agents_frame.pack(fill="x", pady=(0, 6))
+
+        # Live agent log (scrolling)
+        self._agent_log_frame = tk.Frame(parent, bg=AGENT_PANEL_BG, highlightthickness=1,
+                                         highlightbackground=BORDER_COLOR, height=120)
+        self._agent_log_frame.pack(fill="x", pady=(0, 6))
+        self._agent_log_frame.pack_propagate(False)
+
+        self._agent_log_text = tk.Text(
+            self._agent_log_frame, bg=AGENT_PANEL_BG, fg=TEXT_DIM,
+            font=self.font_tiny, wrap="word", relief="flat",
+            padx=6, pady=4, state="disabled", cursor="arrow",
+            borderwidth=0, height=7,
+        )
+        self._agent_log_text.pack(fill="both", expand=True)
+        self._agent_log_text.tag_configure("agent_name", foreground=AGENT_RUNNING, font=self.font_tiny)
+        self._agent_log_text.tag_configure("agent_ok", foreground=AGENT_COMPLETED)
+        self._agent_log_text.tag_configure("agent_err", foreground=AGENT_FAILED)
+        self._agent_log_text.tag_configure("agent_info", foreground=TEXT_DIM)
+        self._agent_log_text.tag_configure("agent_time", foreground=ACCENT_DIM)
+
+        self._refresh_user_agents()
+        self._update_agents_periodic()
 
     def _create_gauge(self, parent, label):
         frame = tk.Frame(parent, bg=PANEL_COLOR, highlightthickness=1,
@@ -408,6 +443,8 @@ class JarvisGUI:
 
     def _update_gauge(self, gauge, pct, detail_text=""):
         canvas = gauge["canvas"]
+        if not canvas.winfo_exists():
+            return
         canvas.delete("all")
         w = canvas.winfo_width() or 230
         h = canvas.winfo_height() or 8
@@ -492,6 +529,7 @@ class JarvisGUI:
         self._activity_text.tag_configure("tool", foreground=STATUS_SPEAKING)
         self._activity_text.tag_configure("error", foreground=GAUGE_RED)
         self._activity_text.tag_configure("info", foreground=TEXT_DIM)
+        self._activity_text.tag_configure("agent", foreground=AGENT_RUNNING)
 
         # Tasks
         self._panel_header(parent, "\u2610  TASKS")
@@ -601,6 +639,11 @@ class JarvisGUI:
         def _apply(stats):
             if not stats or not hasattr(self, "_cpu_gauge"):
                 return
+            try:
+                if not self._cpu_gauge["canvas"].winfo_exists():
+                    return
+            except Exception:
+                return
             self._sys_stats = stats
             freq_str = f"{stats['freq']:.0f} MHz" if stats["freq"] else ""
             self._update_gauge(
@@ -617,7 +660,7 @@ class JarvisGUI:
             )
             self._net_label.config(
                 text=f"\u2191 {stats['net_sent']:.0f} MB    \u2193 {stats['net_recv']:.0f} MB"
-            )
+            ) if self._net_label.winfo_exists() else None
 
         def _work():
             stats = _fetch()
@@ -657,7 +700,7 @@ class JarvisGUI:
                     pass
 
             def _apply():
-                if hasattr(self, "_gpu_label"):
+                if hasattr(self, "_gpu_label") and self._gpu_label.winfo_exists():
                     self._gpu_label.config(text=gpu_info)
 
             self.root.after(0, _apply)
@@ -665,7 +708,7 @@ class JarvisGUI:
         threading.Thread(target=_work, daemon=True).start()
 
     def _update_uptime(self):
-        if not hasattr(self, "_uptime_label"):
+        if not hasattr(self, "_uptime_label") or not self._uptime_label.winfo_exists():
             return
         elapsed = int(time.time() - self._start_time)
         h, m, s = elapsed // 3600, (elapsed % 3600) // 60, elapsed % 60
@@ -677,7 +720,7 @@ class JarvisGUI:
     # ══════════════════════════════════════════════════════════════════════════
 
     def _animate_pulse(self):
-        if not hasattr(self, "_core_canvas"):
+        if not hasattr(self, "_core_canvas") or not self._core_canvas.winfo_exists():
             return
         canvas = self._core_canvas
         canvas.delete("all")
@@ -734,7 +777,7 @@ class JarvisGUI:
                 return
             self._activity_text.config(state="normal")
             ts = datetime.now().strftime("%H:%M:%S")
-            tag = category if category in ("system", "tool", "error", "info") else "info"
+            tag = category if category in ("system", "tool", "error", "info", "agent") else "info"
             self._activity_text.insert("end", f"[{ts}] ", "time")
             self._activity_text.insert("end", f"{message}\n", tag)
             self._activity_text.see("end")
@@ -764,7 +807,7 @@ class JarvisGUI:
             return tasks, reminders
 
         def _apply(tasks, reminders):
-            if not hasattr(self, "_tasks_inner"):
+            if not hasattr(self, "_tasks_inner") or not self._tasks_inner.winfo_exists():
                 return
             self._tasks = tasks
             self._reminders = reminders
@@ -779,6 +822,8 @@ class JarvisGUI:
         self.root.after(10000, self._update_tasks_reminders)
 
     def _refresh_tasks_display(self):
+        if not hasattr(self, "_tasks_inner") or not self._tasks_inner.winfo_exists():
+            return
         for w in self._tasks_inner.winfo_children():
             w.destroy()
         if not self._tasks:
@@ -808,6 +853,8 @@ class JarvisGUI:
                      font=self.font_tiny, fg=TEXT_DIM, bg=PANEL_COLOR).pack(anchor="w")
 
     def _refresh_reminders_display(self):
+        if not hasattr(self, "_reminders_inner") or not self._reminders_inner.winfo_exists():
+            return
         for w in self._reminders_inner.winfo_children():
             w.destroy()
         if not self._reminders:
@@ -838,7 +885,7 @@ class JarvisGUI:
                     pass
 
     # ══════════════════════════════════════════════════════════════════════════
-    #  SUB-AGENTS
+    #  SYSTEM MODULES (formerly SUB-AGENTS)
     # ══════════════════════════════════════════════════════════════════════════
 
     def _refresh_subagents(self):
@@ -861,7 +908,11 @@ class JarvisGUI:
                      fg=TEXT_DIM, bg=PANEL_COLOR).pack(side="right")
 
     def set_subagent_status(self, name: str, status: str, desc: str = ""):
-        """Update a sub-agent's status. Thread-safe."""
+        """Update a system module's status. Thread-safe."""
+        # Route user-spawned agents to separate panel
+        if name.startswith("Agent:"):
+            self.set_user_agent_status(name[6:], status, desc)
+            return
         if name in self._subagents:
             self._subagents[name]["status"] = status
             if desc:
@@ -874,6 +925,117 @@ class JarvisGUI:
                 self._refresh_subagents()
 
         self.root.after(0, _do)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  USER-SPAWNED AGENTS (live view)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def set_user_agent_status(self, name: str, status: str, desc: str = ""):
+        """Update a user-spawned agent's status. Thread-safe."""
+        self._user_agents[name] = {
+            "status": status,
+            "desc": desc or name,
+            "updated": time.time(),
+        }
+        def _do():
+            if hasattr(self, "_user_agents_frame"):
+                self._refresh_user_agents()
+        self.root.after(0, _do)
+
+    def _refresh_user_agents(self):
+        """Redraw the user-spawned agents list."""
+        if not hasattr(self, "_user_agents_frame"):
+            return
+        for w in self._user_agents_frame.winfo_children():
+            w.destroy()
+        inner = tk.Frame(self._user_agents_frame, bg=PANEL_COLOR)
+        inner.pack(fill="x", padx=6, pady=4)
+
+        if not self._user_agents:
+            tk.Label(inner, text="No agents spawned", font=self.font_tiny,
+                     fg=TEXT_DIM, bg=PANEL_COLOR).pack(anchor="w")
+            return
+
+        for name, info in self._user_agents.items():
+            row = tk.Frame(inner, bg=PANEL_COLOR)
+            row.pack(fill="x", pady=1)
+            status = info.get("status", "idle")
+
+            # Status icon + color
+            icon_map = {
+                "running": ("\u25b6", AGENT_RUNNING),
+                "active": ("\u25b6", AGENT_RUNNING),
+                "completed": ("\u2714", AGENT_COMPLETED),
+                "failed": ("\u2718", AGENT_FAILED),
+                "stopped": ("\u25a0", AGENT_STOPPED),
+                "idle": ("\u25cb", SUBAGENT_IDLE),
+                "waiting": ("\u25cc", GAUGE_YELLOW),
+            }
+            icon, color = icon_map.get(status, ("\u25cb", SUBAGENT_IDLE))
+
+            tk.Label(row, text=icon, font=self.font_tiny, fg=color,
+                     bg=PANEL_COLOR).pack(side="left", padx=(0, 4))
+            tk.Label(row, text=name, font=self.font_tiny,
+                     fg=TEXT_COLOR, bg=PANEL_COLOR).pack(side="left")
+
+            # Truncate long descriptions
+            desc = info.get("desc", "")
+            if len(desc) > 35:
+                desc = desc[:32] + "..."
+            tk.Label(row, text=desc, font=self.font_tiny,
+                     fg=color, bg=PANEL_COLOR).pack(side="right")
+
+    def log_agent_activity(self, agent_name: str, message: str, level: str = "info"):
+        """Log agent activity to the live agent log panel. Thread-safe."""
+        def _do():
+            if not hasattr(self, "_agent_log_text"):
+                return
+            self._agent_log_text.config(state="normal")
+            ts = datetime.now().strftime("%H:%M:%S")
+            self._agent_log_text.insert("end", f"[{ts}] ", "agent_time")
+            self._agent_log_text.insert("end", f"{agent_name}: ", "agent_name")
+            tag = {"ok": "agent_ok", "error": "agent_err"}.get(level, "agent_info")
+            self._agent_log_text.insert("end", f"{message}\n", tag)
+            self._agent_log_text.see("end")
+            self._agent_log_text.config(state="disabled")
+        self.root.after(0, _do)
+
+    def _update_agents_periodic(self):
+        """Periodically poll AgentManager for live agent progress."""
+        def _poll():
+            try:
+                from agent.agent_manager import AgentManager
+                mgr = AgentManager()
+                agents = mgr.list_agents()
+                for a in agents:
+                    name = a["name"]
+                    status = a["status"]
+                    desc = a.get("task", "")[:40]
+                    result_preview = a.get("result", "")[:40]
+                    if status == "completed" and result_preview:
+                        desc = result_preview
+                    elif status == "failed":
+                        desc = a.get("error", "Error")[:40]
+                    self._user_agents[name] = {
+                        "status": status,
+                        "desc": desc,
+                        "updated": time.time(),
+                    }
+                # Refresh UI
+                if hasattr(self, "_user_agents_frame"):
+                    self._refresh_user_agents()
+            except Exception:
+                pass
+
+        def _schedule():
+            if not self.root.winfo_exists():
+                return
+            threading.Thread(target=_poll, daemon=True).start()
+            self.root.after(3000, _schedule)  # Poll every 3 seconds
+
+        # Run immediately on startup, then every 3s
+        self.root.after(500, lambda: threading.Thread(target=_poll, daemon=True).start())
+        self.root.after(3000, _schedule)
 
     # ══════════════════════════════════════════════════════════════════════════
     #  ACTIVE TOOLS
@@ -1047,7 +1209,7 @@ class JarvisGUI:
     # ══════════════════════════════════════════════════════════════════════════
 
     def _animate_waveform(self):
-        if not hasattr(self, "_wave_canvas"):
+        if not hasattr(self, "_wave_canvas") or not self._wave_canvas.winfo_exists():
             return
         canvas = self._wave_canvas
         w = canvas.winfo_width() or 600

@@ -83,6 +83,20 @@ class SQLiteStore:
             CREATE INDEX IF NOT EXISTS idx_reminders_trigger ON reminders(trigger_at);
             CREATE INDEX IF NOT EXISTS idx_summaries_tier ON memory_summaries(tier, period_start);
             CREATE INDEX IF NOT EXISTS idx_access_log_memory ON memory_access_log(memory_id);
+
+            CREATE TABLE IF NOT EXISTS agents (
+                name TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                task_description TEXT NOT NULL,
+                task_type TEXT DEFAULT 'general',
+                task_params TEXT DEFAULT '{}',
+                status TEXT DEFAULT 'idle',
+                result TEXT DEFAULT '',
+                error TEXT DEFAULT '',
+                created_at REAL,
+                started_at REAL,
+                finished_at REAL
+            );
         """)
         # Migrate: add 'consolidated' column if missing (existing DBs)
         try:
