@@ -1,1 +1,1 @@
-"""JARVIS Agent - LangGraph with hybrid LLM routing."""
+"""JARVIS Agent — personality, agent manager, and utilities."""
