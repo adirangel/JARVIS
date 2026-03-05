@@ -101,7 +101,16 @@ def start_gemini(api_key: str, gui: JarvisGUI):
                 except Exception as e:
                     logger.error(f"[Memory] Save error: {e}")
 
+        def recall_mem() -> str:
+            """Build memory context block for system prompt injection."""
+            try:
+                return long_term.manager.build_context("user profile and preferences")
+            except Exception as e:
+                logger.error(f"[Memory] Recall error: {e}")
+                return ""
+
         engine.save_memory = save_mem
+        engine.recall_memory = recall_mem
         gui.set_subagent_status("Memory", "active", "Long-term memory connected")
         gui.log_activity("Long-term memory module loaded", "system")
         logger.info("[Memory] Long-term memory connected.")
@@ -161,6 +170,20 @@ def start_gemini(api_key: str, gui: JarvisGUI):
     except Exception as e:
         gui.set_subagent_status("Agents", "idle", "Not available")
         logger.warning(f"[Agents] Not available: {e}")
+
+    # ── Skills module status ──────────────────────────────────────────────────
+    try:
+        from skills.loader import get_loaded_skills
+        loaded = get_loaded_skills()
+        if loaded:
+            gui.set_subagent_status("Skills", "active", f"{len(loaded)} skill(s) loaded")
+            gui.log_activity(f"Skills: {len(loaded)} dynamic skill(s) loaded", "system")
+        else:
+            gui.set_subagent_status("Skills", "idle", "No skills learned yet")
+        gui.refresh_skills()
+    except Exception as e:
+        gui.set_subagent_status("Skills", "idle", "Not available")
+        logger.warning(f"[Skills] GUI status: {e}")
 
     def _run():
         global _loop

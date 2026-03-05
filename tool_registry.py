@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import platform
+import time as _time
 from typing import Any
 
 from loguru import logger
+from skills.loader import load_all_skills, is_dynamic_skill, execute_skill as _exec_dynamic_skill
 
 # ── Tool declarations (Gemini format) ─────────────────────────────────────────
 
@@ -111,10 +114,13 @@ TOOL_DECLARATIONS = [
     {
         "name": "browser_control",
         "description": (
-            "Control the user's real Chrome/Edge browser: navigate to URL, Google search, "
-            "type text in any field or chat, click, scroll, open/close tabs, go back/forward, "
-            "focus address bar, find text on page. Uses the actual browser, not a separate instance. "
-            "Use type_and_enter to send messages in chat interfaces."
+            "Full control of the user's real Chrome/Edge browser. Navigate to any website, "
+            "interact with page elements: click buttons, type in text fields/chat boxes, "
+            "press keys (Tab to move between fields, Enter to submit), use keyboard shortcuts, "
+            "scroll, manage tabs, take screenshots to see what's on screen. "
+            "For chat interfaces (ChatGPT, etc.): go_to the URL, wait for load, use press_key tab "
+            "to reach the input field, then type_and_enter your message. "
+            "Use screenshot to see the page and find where to click."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -122,16 +128,20 @@ TOOL_DECLARATIONS = [
                 "action": {
                     "type": "STRING",
                     "description": (
-                        "go_to, search, click, type, type_and_enter, scroll, new_tab, close_tab, "
-                        "next_tab, prev_tab, back, forward, refresh, address, find, "
-                        "select_all, copy, paste, close, focus"
+                        "go_to, search, click, double_click, type, type_and_enter, press_key, hotkey, "
+                        "scroll, wait, screenshot, new_tab, close_tab, next_tab, prev_tab, "
+                        "back, forward, refresh, address, find, select_all, copy, paste, close, focus"
                     )
                 },
                 "url": {"type": "STRING", "description": "URL for go_to/new_tab/address actions"},
                 "query": {"type": "STRING", "description": "Search query for search action"},
-                "selector": {"type": "STRING", "description": "For click: coordinates as 'x,y'"},
+                "selector": {"type": "STRING", "description": "For click/double_click: coordinates as 'x,y'"},
                 "text": {"type": "STRING", "description": "Text to type (supports Hebrew/Unicode)"},
-                "direction": {"type": "STRING", "description": "Scroll direction: up or down"}
+                "key": {"type": "STRING", "description": "Key name for press_key (tab, enter, escape, space, up, down, left, right, backspace, delete, home, end, pageup, pagedown, f1-f12)"},
+                "keys": {"type": "STRING", "description": "Key combination for hotkey, separated by + (e.g. 'ctrl+a', 'ctrl+enter', 'alt+tab', 'ctrl+shift+t')"},
+                "seconds": {"type": "NUMBER", "description": "Seconds to wait (for wait action, default 2, max 30)"},
+                "direction": {"type": "STRING", "description": "Scroll direction: up or down"},
+                "question": {"type": "STRING", "description": "For screenshot: specific question about what's on screen (e.g. 'where is the chat input?')"}
             },
             "required": ["action"]
         }
@@ -529,6 +539,92 @@ TOOL_DECLARATIONS = [
             "required": ["name"]
         }
     },
+    # ── Self-evolution: Skill management ───────────────────────────────────
+    {
+        "name": "skill_manager",
+        "description": (
+            "Manage JARVIS's dynamic skills (self-evolution). "
+            "Create new tools for yourself, install skills from the internet, "
+            "list available skills, remove skills, reload from disk, or run a dynamic skill. "
+            "Skills you create become permanent tools. "
+            "Actions: 'create' (write a new skill), 'install' (download from URL/GitHub), "
+            "'list' (show loaded skills), 'remove' (delete a skill), 'reload' (re-scan disk), "
+            "'run' (execute a skill by name with arguments)."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": "create, install, list, remove, reload, run"
+                },
+                "name": {
+                    "type": "STRING",
+                    "description": "Skill name (for create, remove, run)"
+                },
+                "description": {
+                    "type": "STRING",
+                    "description": "Skill description for the LLM (for create)"
+                },
+                "parameters_json": {
+                    "type": "STRING",
+                    "description": (
+                        "JSON string of Gemini-format parameter schema (for create). "
+                        "Example: {\"type\": \"OBJECT\", \"properties\": {\"text\": {\"type\": \"STRING\"}}, \"required\": [\"text\"]}"
+                    )
+                },
+                "code": {
+                    "type": "STRING",
+                    "description": (
+                        "Python code for the execute() function body (for create). "
+                        "Receives kwargs matching the parameters. Must return a string."
+                    )
+                },
+                "url": {
+                    "type": "STRING",
+                    "description": "URL to download skill from (for install). Supports GitHub, Gist, raw .py URLs."
+                },
+                "skill_args_json": {
+                    "type": "STRING",
+                    "description": "JSON string of arguments to pass to the skill (for run)"
+                },
+            },
+            "required": ["action"]
+        }
+    },
+    # ── Purchase Protection (double confirmation) ─────────────────────────
+    {
+        "name": "purchase_approval",
+        "description": (
+            "MANDATORY before ANY purchase, payment, checkout, subscription, or financial transaction. "
+            "Requires TWO separate user confirmations before proceeding. "
+            "Flow: 1) action='request' to start approval, 2) get user confirm, call action='confirm', "
+            "3) get SECOND user confirm, call action='confirm' again. Only then proceed. "
+            "NEVER skip this. NEVER enter card details without full approval."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": "request (start approval), confirm (add confirmation), status (check state), cancel"
+                },
+                "item_description": {
+                    "type": "STRING",
+                    "description": "What is being purchased (for request)"
+                },
+                "amount": {
+                    "type": "STRING",
+                    "description": "Cost/price if known (for request)"
+                },
+                "approval_id": {
+                    "type": "STRING",
+                    "description": "Approval ID from a previous request (for confirm/status/cancel)"
+                }
+            },
+            "required": ["action"]
+        }
+    },
 ]
 
 
@@ -598,6 +694,15 @@ def execute_tool(name: str, args: dict) -> str:
             return _exec_agent_message(args)
         elif name == "remove_agent":
             return _exec_remove_agent(args)
+        # Self-evolution: Skill management
+        elif name == "skill_manager":
+            return _exec_skill_manager(args)
+        # Purchase protection
+        elif name == "purchase_approval":
+            return _exec_purchase_approval(args)
+        # Dynamic skills (loaded from skills/ directory)
+        elif is_dynamic_skill(name):
+            return _exec_dynamic_skill(name, args)
         else:
             return f"Unknown tool: {name}"
 
@@ -786,16 +891,35 @@ def _exec_computer_settings(args: dict) -> str:
 
 
 def _exec_browser_control(args: dict) -> str:
-    """Browser automation via Playwright."""
+    """Browser automation — with purchase safety net."""
+    action = args.get("action", "")
+    url = args.get("url", "")
+    text = args.get("text", "")
+
+    # Purchase safety: block card number entry without approval
+    safety = _check_purchase_safety(action, url, text)
+    if safety and safety.startswith("BLOCKED"):
+        return safety
+
     from tools.browser_control import browser_action
-    return browser_action(
-        action=args.get("action", ""),
-        url=args.get("url", ""),
+    result = browser_action(
+        action=action,
+        url=url,
         query=args.get("query", ""),
         selector=args.get("selector", ""),
-        text=args.get("text", ""),
+        text=text,
         direction=args.get("direction", "down"),
+        key=args.get("key", ""),
+        keys=args.get("keys", ""),
+        seconds=float(args.get("seconds", 0)),
+        question=args.get("question", ""),
     )
+
+    # Append warning if payment-related URL detected
+    if safety:
+        result += f"\n\n{safety}"
+
+    return result
 
 
 def _exec_file_controller(args: dict) -> str:
@@ -1803,3 +1927,226 @@ def _exec_remove_agent(args: dict) -> str:
         return "Agent name is required."
     mgr = _get_agent_manager()
     return mgr.remove_agent(name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  PURCHASE PROTECTION (Double Confirmation)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_purchase_approvals: dict[str, dict] = {}
+_purchase_counter: int = 0
+
+
+def _check_purchase_safety(action: str, url: str = "", text: str = "") -> str | None:
+    """Safety net for browser actions involving purchases.
+
+    Returns an error/warning string if action should be blocked or flagged,
+    None if the action is safe to proceed.
+    """
+    # Block typing credit/debit card numbers without an approved purchase
+    if action in ("type", "type_and_enter") and text:
+        clean = text.replace(" ", "").replace("-", "").replace(".", "")
+        # 13-19 digits = credit/debit card number pattern
+        if re.match(r"^\d{13,19}$", clean):
+            has_approved = any(
+                a["status"] == "approved" for a in _purchase_approvals.values()
+            )
+            if not has_approved:
+                return (
+                    "BLOCKED: Cannot enter what appears to be a credit/debit card number. "
+                    "You MUST use purchase_approval and get TWO confirmations from the user "
+                    "before entering any payment details."
+                )
+
+    # Warn on payment-related URLs (navigate but flag it)
+    if action == "go_to" and url:
+        url_lower = url.lower()
+        payment_signs = [
+            "checkout", "/pay", "payment", "billing",
+            "/order", "/subscribe", "cart/",
+        ]
+        if any(s in url_lower for s in payment_signs):
+            return (
+                "WARNING: This URL appears payment-related. If this involves a purchase, "
+                "you MUST use purchase_approval and get TWO user confirmations first."
+            )
+
+    return None
+
+
+def _exec_purchase_approval(args: dict) -> str:
+    """Handle purchase approval flow — requires 2 separate user confirmations."""
+    global _purchase_counter
+
+    action = args.get("action", "request").lower()
+    description = args.get("item_description", "")
+    amount = args.get("amount", "unknown")
+    approval_id = args.get("approval_id", "")
+
+    if action == "request":
+        if not description:
+            return "Purchase description is required."
+
+        _purchase_counter += 1
+        pid = f"PA-{_purchase_counter:03d}"
+        _purchase_approvals[pid] = {
+            "description": description,
+            "amount": amount,
+            "confirmations": 0,
+            "status": "pending",
+            "created_at": _time.time(),
+        }
+        return (
+            f"PURCHASE APPROVAL REQUESTED (#{pid}):\n"
+            f"  Item: {description}\n"
+            f"  Amount: {amount}\n"
+            f"  Status: PENDING - 0 of 2 confirmations\n\n"
+            f"You MUST ask the user to explicitly confirm this purchase. "
+            f"TWO separate confirmations are required before you may proceed."
+        )
+
+    elif action == "confirm":
+        if not approval_id:
+            return "approval_id is required for confirm action."
+
+        approval = _purchase_approvals.get(approval_id)
+        if not approval:
+            return f"No pending approval found with ID '{approval_id}'."
+
+        if approval["status"] == "cancelled":
+            return f"Purchase #{approval_id} was cancelled."
+        if approval["status"] == "approved":
+            return f"Purchase #{approval_id} is already fully approved."
+
+        approval["confirmations"] += 1
+
+        if approval["confirmations"] >= 2:
+            approval["status"] = "approved"
+            return (
+                f"PURCHASE APPROVED (#{approval_id}): {approval['description']}\n"
+                f"  Amount: {approval['amount']}\n"
+                f"  Confirmations: 2 of 2 - APPROVED\n\n"
+                f"You may now proceed with the purchase."
+            )
+        else:
+            return (
+                f"First confirmation received for #{approval_id}.\n"
+                f"  Item: {approval['description']}\n"
+                f"  Amount: {approval['amount']}\n"
+                f"  Confirmations: 1 of 2\n\n"
+                f"ONE MORE confirmation is needed. You MUST ask the user AGAIN "
+                f"to explicitly confirm this purchase before proceeding."
+            )
+
+    elif action == "status":
+        if approval_id:
+            approval = _purchase_approvals.get(approval_id)
+            if not approval:
+                return f"No approval found with ID '{approval_id}'."
+            return (
+                f"Purchase #{approval_id}:\n"
+                f"  Item: {approval['description']}\n"
+                f"  Amount: {approval['amount']}\n"
+                f"  Confirmations: {approval['confirmations']} of 2\n"
+                f"  Status: {approval['status']}"
+            )
+        if not _purchase_approvals:
+            return "No purchase approvals on record."
+        lines = ["Purchase approvals:"]
+        for pid, a in _purchase_approvals.items():
+            lines.append(
+                f"  #{pid}: {a['description']} ({a['amount']}) "
+                f"- {a['status']} ({a['confirmations']}/2)"
+            )
+        return "\n".join(lines)
+
+    elif action == "cancel":
+        if not approval_id:
+            return "approval_id is required for cancel action."
+        approval = _purchase_approvals.get(approval_id)
+        if not approval:
+            return f"No approval found with ID '{approval_id}'."
+        approval["status"] = "cancelled"
+        return f"Purchase #{approval_id} cancelled: {approval['description']}"
+
+    return f"Unknown action: {action}. Use: request, confirm, status, cancel."
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  SKILL MANAGEMENT
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _exec_skill_manager(args: dict) -> str:
+    """Handle skill management actions — self-evolution."""
+    from skills.manager import (
+        create_skill, install_skill_from_url, list_skills,
+        remove_skill, run_skill, reload_all,
+    )
+
+    action = args.get("action", "list").lower()
+
+    if action == "create":
+        name = args.get("name", "")
+        description = args.get("description", "")
+        params_json = args.get("parameters_json", "{}")
+        code = args.get("code", "")
+
+        if not name:
+            return "Skill name is required for create."
+        if not code:
+            return "Code is required for create."
+        if not description:
+            description = f"Custom skill: {name}"
+
+        try:
+            parameters = json.loads(params_json) if params_json else {}
+        except json.JSONDecodeError:
+            return "Invalid parameters_json — must be valid JSON."
+
+        return create_skill(name, description, parameters, code)
+
+    elif action == "install":
+        url = args.get("url", "")
+        name = args.get("name", "")
+        if not url:
+            return "URL is required for install."
+        return install_skill_from_url(url, name)
+
+    elif action == "list":
+        return list_skills()
+
+    elif action == "remove":
+        name = args.get("name", "")
+        if not name:
+            return "Skill name is required for remove."
+        return remove_skill(name)
+
+    elif action == "reload":
+        return reload_all()
+
+    elif action == "run":
+        name = args.get("name", "")
+        skill_args_json = args.get("skill_args_json", "{}")
+        if not name:
+            return "Skill name is required for run."
+        try:
+            skill_args = json.loads(skill_args_json) if skill_args_json else {}
+        except json.JSONDecodeError:
+            return "Invalid skill_args_json — must be valid JSON."
+        return run_skill(name, skill_args)
+
+    return f"Unknown skill_manager action: {action}. Use: create, install, list, remove, reload, run."
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  DYNAMIC SKILL STARTUP LOADING
+# ══════════════════════════════════════════════════════════════════════════════
+
+try:
+    _startup_declarations, _startup_dispatch = load_all_skills()
+    TOOL_DECLARATIONS.extend(_startup_declarations)
+    if _startup_declarations:
+        logger.info(f"[Skills] {len(_startup_declarations)} dynamic skill(s) registered as first-class tools")
+except Exception as _e:
+    logger.warning(f"[Skills] Startup loading failed: {_e}")

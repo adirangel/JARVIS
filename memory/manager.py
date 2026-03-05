@@ -149,10 +149,9 @@ class MemoryManager:
             except Exception as e:
                 logger.debug(f"Vector store error: {e}")
 
-        # Every 3rd turn, attempt LLM fact extraction (async-safe: runs sync here)
+        # Attempt LLM fact extraction every turn (stage-1 gate is cheap)
         self._turn_counter += 1
-        if self._turn_counter % 3 == 0:
-            self.extract_facts_from(user_message, assistant_response)
+        self.extract_facts_from(user_message, assistant_response)
 
     # ── 2-stage LLM fact extraction ───────────────────────────────────────────
 
