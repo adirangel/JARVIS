@@ -74,6 +74,25 @@ config.local.yaml
 *.bak2
 *.mock
 archive/
+gui_backup.py
+
+# Local config (use config.example.yaml as template)
+config.yaml
+config/settings.yaml
+
+# Legacy files
+agent/timing_context.py
+docs/plans/
+ui/
+
+# Old test files (test old architecture)
+tests/test_agent.py
+tests/test_api.py
+tests/test_heartbeat.py
+tests/test_skills_loading.py
+tests/test_tools.py
+tests/test_validation.py
+tests/test_voice_session.py
 
 # Logs
 log/
