@@ -78,7 +78,7 @@ SYSTEM_PROMPT = (
     "- Check agent progress with 'agent_status', get full results with 'agent_result'.\n"
     "- When an agent reports back, summarize its findings conversationally.\n"
     "- The user can ask to spawn as many agents as needed, each doing different work.\n"
-    "- Example: 'send an autonomous agent to chat with Grok while a monitor watches CPU usage'.\n\n",
+    "- Example: 'send an autonomous agent to chat with Grok while a monitor watches CPU usage'.\n\n"
     "## Self-Evolution (Skills):\n"
     "- You can CREATE new tools for yourself using 'skill_manager' with action 'create'.\n"
     "- Provide: name, description, parameters_json (Gemini schema), and code (Python function body).\n"

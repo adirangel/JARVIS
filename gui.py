@@ -683,7 +683,10 @@ class JarvisGUI:
         def _work():
             stats = _fetch()
             if stats:
-                self.root.after(0, lambda: _apply(stats))
+                try:
+                    self.root.after(0, lambda: _apply(stats))
+                except RuntimeError:
+                    pass  # mainloop not ready yet
 
         threading.Thread(target=_work, daemon=True).start()
         self.root.after(2000, self._update_system_stats)
@@ -721,7 +724,10 @@ class JarvisGUI:
                 if hasattr(self, "_gpu_label") and self._gpu_label.winfo_exists():
                     self._gpu_label.config(text=gpu_info)
 
-            self.root.after(0, _apply)
+            try:
+                self.root.after(0, _apply)
+            except RuntimeError:
+                pass  # mainloop not ready yet
 
         threading.Thread(target=_work, daemon=True).start()
 
@@ -834,7 +840,10 @@ class JarvisGUI:
 
         def _work():
             tasks, reminders = _load()
-            self.root.after(0, lambda: _apply(tasks, reminders))
+            try:
+                self.root.after(0, lambda: _apply(tasks, reminders))
+            except RuntimeError:
+                pass  # mainloop not ready yet
 
         threading.Thread(target=_work, daemon=True).start()
         self.root.after(10000, self._update_tasks_reminders)

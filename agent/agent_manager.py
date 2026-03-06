@@ -325,6 +325,8 @@ class Agent:
         Uses Gemini text API for decision-making and can execute JARVIS tools.
         Sends interim reports to JARVIS after every iteration.
         """
+        from google.genai import types as gtypes
+
         goal = self.task.params.get("goal", self.task.description)
         max_iterations = self.task.params.get("max_iterations", 20)
         tools_allowed = self.task.params.get("tools", ["browser_control"])
@@ -403,7 +405,11 @@ class Agent:
             parts.append(f"Iteration {i + 1}/{max_iterations}. Current screen:")
             parts.append(screenshot_part)
 
-            conversation.append({"role": "user", "parts": parts})
+            content_parts = [
+                gtypes.Part(text=p) if isinstance(p, str) else p
+                for p in parts
+            ]
+            conversation.append(gtypes.Content(role="user", parts=content_parts))
 
             # Trim conversation to avoid token overload (keep last ~12 exchanges)
             if len(conversation) > 24:
@@ -419,7 +425,7 @@ class Agent:
                 self._stop_event.wait(5)
                 continue
 
-            conversation.append({"role": "model", "parts": [response_text]})
+            conversation.append(gtypes.Content(role="model", parts=[gtypes.Part(text=response_text)]))
 
             # 4. Parse JSON response
             try:
