@@ -5,6 +5,13 @@ config/api_keys.json
 *.key
 .env
 .env.local
+
+# Dynamic skills (installed/created at runtime — may contain personal data)
+skills/*.py
+!skills/__init__.py
+!skills/base.py
+!skills/loader.py
+!skills/manager.py
 .env.*
 *.pyd
 
@@ -76,12 +83,15 @@ config.local.yaml
 archive/
 gui_backup.py
 
-# Local config (use config.example.yaml as template)
+# Local config
 config.yaml
+config.example.yaml
 config/settings.yaml
 
 # Legacy files
 agent/timing_context.py
+agent/utils.py
+memory/short_term.py
 docs/plans/
 ui/
 

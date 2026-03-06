@@ -94,36 +94,48 @@ def browser_action(
     selector: str = "",
     text: str = "",
     direction: str = "down",
+    key: str = "",
+    keys: str = "",
+    seconds: float = 0,
+    question: str = "",
 ) -> str:
     """Execute a browser action using the user's real browser + pyautogui.
 
     Actions:
-        go_to      - Navigate to URL
-        search     - Google search
-        click      - Click at current mouse position or coordinates in selector "x,y"
-        type       - Type text into the currently focused field
+        go_to          - Navigate to URL (focuses browser, waits for load)
+        search         - Google search
+        click          - Click at current mouse position or coordinates in selector "x,y"
+        double_click   - Double-click at position
+        type           - Type text into the currently focused field
         type_and_enter - Type text and press Enter (for chat interfaces)
-        scroll     - Scroll up/down
-        new_tab    - Open a new tab
-        close_tab  - Close current tab
-        next_tab   - Switch to next tab
-        prev_tab   - Switch to previous tab
-        back       - Go back
-        forward    - Go forward
-        refresh    - Refresh page
-        address    - Focus address bar and type URL
-        find       - Open find dialog and search for text
-        select_all - Select all text in current field
-        copy       - Copy selection
-        paste      - Paste clipboard
-        close      - Close browser window
-        focus      - Bring browser to front
+        press_key      - Press a single key (tab, enter, escape, space, up, down, etc.)
+        hotkey         - Press key combination (ctrl+a, ctrl+enter, alt+tab, etc.)
+        scroll         - Scroll up/down
+        wait           - Wait for specified seconds (for page loads)
+        screenshot     - Take a screenshot and describe what's visible on screen
+        new_tab        - Open a new tab
+        close_tab      - Close current tab
+        next_tab       - Switch to next tab
+        prev_tab       - Switch to previous tab
+        back           - Go back
+        forward        - Go forward
+        refresh        - Refresh page
+        address        - Focus address bar and type URL
+        find           - Open find dialog and search for text
+        select_all     - Select all text in current field
+        copy           - Copy selection
+        paste          - Paste clipboard
+        close          - Close browser window
+        focus          - Bring browser to front
     """
     try:
         if action == "go_to":
             if not url:
                 return "No URL specified."
-            return _open_browser_url(url)
+            _bring_browser_to_front()
+            result = _open_browser_url(url)
+            _wait_for_browser(2.0)  # Wait for page to load
+            return result
 
         elif action == "search":
             if not query:
@@ -144,6 +156,18 @@ def browser_action(
             pyautogui.click()
             return "Clicked at current position"
 
+        elif action == "double_click":
+            if selector and "," in selector:
+                try:
+                    parts = selector.split(",")
+                    x, y = int(parts[0].strip()), int(parts[1].strip())
+                    pyautogui.doubleClick(x, y)
+                    return f"Double-clicked at ({x}, {y})"
+                except (ValueError, IndexError):
+                    pass
+            pyautogui.doubleClick()
+            return "Double-clicked at current position"
+
         elif action == "type":
             if not text:
                 return "No text to type."
@@ -158,10 +182,35 @@ def browser_action(
             pyautogui.press("enter")
             return "Typed text and pressed Enter"
 
+        elif action == "press_key":
+            target_key = key or text or ""
+            if not target_key:
+                return "No key specified. Use key parameter (e.g. 'tab', 'enter', 'escape')."
+            target_key = target_key.strip().lower()
+            pyautogui.press(target_key)
+            return f"Pressed {target_key}"
+
+        elif action == "hotkey":
+            combo = keys or key or text or ""
+            if not combo:
+                return "No key combination specified. Use keys parameter (e.g. 'ctrl+a', 'ctrl+enter')."
+            parts = [k.strip().lower() for k in combo.split("+")]
+            pyautogui.hotkey(*parts)
+            return f"Pressed {'+'.join(parts)}"
+
         elif action == "scroll":
             amount = -5 if direction == "down" else 5
             pyautogui.scroll(amount)
             return f"Scrolled {direction}"
+
+        elif action == "wait":
+            wait_time = seconds if seconds > 0 else 2.0
+            wait_time = min(wait_time, 30.0)  # Cap at 30 seconds
+            time.sleep(wait_time)
+            return f"Waited {wait_time:.1f} seconds"
+
+        elif action == "screenshot":
+            return _take_and_describe_screenshot(question)
 
         elif action == "new_tab":
             pyautogui.hotkey("ctrl", "t")
@@ -281,6 +330,78 @@ def _type_text(text: str):
     except Exception:
         # Fallback: direct typing (ASCII only)
         pyautogui.typewrite(text, interval=0.03)
+
+
+def _take_and_describe_screenshot(question: str = "") -> str:
+    """Take a screenshot, send to Gemini Vision for description."""
+    try:
+        from PIL import ImageGrab
+        import base64
+        import io
+
+        img = ImageGrab.grab()
+
+        # Convert to bytes for Gemini
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        img_bytes = buf.getvalue()
+
+        # Try Gemini Vision to describe the screenshot
+        try:
+            from google import genai
+            from google.genai import types as gtypes
+
+            # Load API key
+            api_key = None
+            for path in ["config/api_keys.json", "api_key.txt"]:
+                try:
+                    if path.endswith(".json"):
+                        import json
+                        with open(path) as f:
+                            api_key = json.load(f).get("gemini_api_key", "")
+                    else:
+                        with open(path) as f:
+                            api_key = f.read().strip()
+                    if api_key:
+                        break
+                except Exception:
+                    continue
+
+            if not api_key:
+                return "Screenshot taken but no API key for vision analysis."
+
+            client = genai.Client(api_key=api_key)
+
+            prompt = (
+                "You are helping a voice assistant control a computer browser. "
+                "Describe what you see on this screenshot concisely. Focus on: "
+                "1) What website/app is open, 2) Key interactive elements visible "
+                "(buttons, text fields, links), 3) Where the main input/text field is "
+                "(describe its position: top/center/bottom, left/center/right). "
+                "4) Any notable content or text on the page.\n"
+            )
+            if question:
+                prompt += f"\nSpecifically answer: {question}\n"
+            prompt += "\nBe concise — max 3-4 sentences."
+
+            response = client.models.generate_content(
+                model="gemini-2.5-flash-preview-05-20",
+                contents=[
+                    prompt,
+                    gtypes.Part.from_bytes(data=img_bytes, mime_type="image/png"),
+                ],
+            )
+            description = response.text or "Could not describe the screenshot."
+            return f"Screenshot analysis:\n{description}"
+
+        except Exception as e:
+            logger.warning(f"Vision analysis failed: {e}")
+            # Fallback: save and report
+            img.save("data/last_screenshot.png")
+            return "Screenshot saved to data/last_screenshot.png (vision analysis unavailable)."
+
+    except Exception as e:
+        return f"Screenshot error: {e}"
 
 
 def _bring_browser_to_front():

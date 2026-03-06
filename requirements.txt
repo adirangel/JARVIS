@@ -8,7 +8,6 @@ mouse
 chromadb
 numpy
 loguru
-PyYAML
 psutil
 httpx>=0.27.0
 Pillow

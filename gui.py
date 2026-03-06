@@ -70,6 +70,9 @@ GAUGE_BG = "#0a1628"
 GAUGE_GREEN = "#00e676"
 GAUGE_YELLOW = "#ffab40"
 GAUGE_RED = "#ff5252"
+SKILL_BULB_ON = "#ffd54f"
+SKILL_BULB_OFF = "#3e4451"
+SKILL_BULB_GLOW = "#ffe082"
 TASK_PENDING = "#ffab40"
 TASK_DONE = "#00e676"
 REMINDER_COLOR = "#ce93d8"
@@ -121,10 +124,13 @@ class JarvisGUI:
             "Voice": {"status": "idle", "desc": "Speech I/O pipeline"},
             "Browser": {"status": "idle", "desc": "Web browser control"},
             "System": {"status": "idle", "desc": "System monitor & control"},
+            "Skills": {"status": "idle", "desc": "Dynamic self-evolution"},
         }
         # User-spawned agents (separate from system modules)
         self._user_agents: dict[str, dict] = {}
         self._active_tools: list[str] = []
+        self._active_skills: set[str] = set()  # currently executing dynamic skills
+        self._loaded_skills_info: list[dict] = []  # [{name, desc}, ...]
         self._tasks: list[dict] = []
         self._reminders: list[dict] = []
         self._sys_stats: dict = {}
@@ -320,6 +326,7 @@ class JarvisGUI:
         self._update_uptime()
         self._animate_pulse()
         self._update_tasks_reminders()
+        self._poll_skills_periodic()
 
         self.log_activity("JARVIS Mission Control initialized", "system")
         self._append_log("system", "JARVIS online. All systems operational.\n")
@@ -561,6 +568,17 @@ class JarvisGUI:
         tk.Label(self._tools_inner, text="No tools active", font=self.font_tiny,
                  fg=TEXT_DIM, bg=PANEL_COLOR).pack(anchor="w")
 
+        # Learned Skills
+        self._panel_header(parent, "\U0001f4a1  LEARNED SKILLS")
+        self._skills_frame = tk.Frame(parent, bg=PANEL_COLOR, highlightthickness=1,
+                                      highlightbackground=BORDER_COLOR)
+        self._skills_frame.pack(fill="x", pady=(0, 6))
+        self._skills_inner = tk.Frame(self._skills_frame, bg=PANEL_COLOR)
+        self._skills_inner.pack(fill="x", padx=6, pady=4)
+        tk.Label(self._skills_inner, text="No skills learned yet",
+                 font=self.font_tiny, fg=TEXT_DIM, bg=PANEL_COLOR).pack(anchor="w")
+        self._load_skills_list()
+
     # ── INPUT BAR ─────────────────────────────────────────────────────────
 
     def _build_input_bar(self):
@@ -665,7 +683,10 @@ class JarvisGUI:
         def _work():
             stats = _fetch()
             if stats:
-                self.root.after(0, lambda: _apply(stats))
+                try:
+                    self.root.after(0, lambda: _apply(stats))
+                except RuntimeError:
+                    pass  # mainloop not ready yet
 
         threading.Thread(target=_work, daemon=True).start()
         self.root.after(2000, self._update_system_stats)
@@ -703,7 +724,10 @@ class JarvisGUI:
                 if hasattr(self, "_gpu_label") and self._gpu_label.winfo_exists():
                     self._gpu_label.config(text=gpu_info)
 
-            self.root.after(0, _apply)
+            try:
+                self.root.after(0, _apply)
+            except RuntimeError:
+                pass  # mainloop not ready yet
 
         threading.Thread(target=_work, daemon=True).start()
 
@@ -816,7 +840,10 @@ class JarvisGUI:
 
         def _work():
             tasks, reminders = _load()
-            self.root.after(0, lambda: _apply(tasks, reminders))
+            try:
+                self.root.after(0, lambda: _apply(tasks, reminders))
+            except RuntimeError:
+                pass  # mainloop not ready yet
 
         threading.Thread(target=_work, daemon=True).start()
         self.root.after(10000, self._update_tasks_reminders)
@@ -1041,12 +1068,41 @@ class JarvisGUI:
     #  ACTIVE TOOLS
     # ══════════════════════════════════════════════════════════════════════════
 
+    # Tool → system module mapping
+    _TOOL_MODULE_MAP = {
+        "browser_control": "Browser",
+        "system_status": "System", "computer_settings": "System",
+        "computer_control": "System", "window_manager": "System",
+        "process_manager": "System",
+        "notes": "Memory", "reminder": "Memory", "task_manager": "Memory",
+    }
+
     def set_active_tool(self, tool_name: str):
         """Mark a tool as currently executing. Thread-safe."""
         if tool_name not in self._active_tools:
             self._active_tools.append(tool_name)
         self.log_activity(f"Executing: {tool_name}", "tool")
         self.set_subagent_status("Tools", "active", f"Running {tool_name}")
+
+        # Activate related system module
+        mod = self._TOOL_MODULE_MAP.get(tool_name)
+        if mod:
+            self.set_subagent_status(mod, "active", f"Running {tool_name}")
+
+        # Check if this is a dynamic skill — light up the bulb
+        try:
+            from skills.loader import is_dynamic_skill
+            if is_dynamic_skill(tool_name):
+                self._active_skills.add(tool_name)
+                self.set_subagent_status("Skills", "active", f"Running {tool_name}")
+                self._refresh_skills_display()
+        except Exception:
+            pass
+
+        # If skill_manager is running, mark Skills module active
+        if tool_name == "skill_manager":
+            self.set_subagent_status("Skills", "active", "Managing skills")
+
         self._refresh_tools_display()
 
     def clear_active_tool(self, tool_name: str):
@@ -1055,6 +1111,43 @@ class JarvisGUI:
             self._active_tools.remove(tool_name)
         if not self._active_tools:
             self.set_subagent_status("Tools", "idle", "Tool execution engine")
+
+        # Deactivate related system module if no other tools need it
+        mod = self._TOOL_MODULE_MAP.get(tool_name)
+        if mod:
+            remaining = [t for t in self._active_tools if self._TOOL_MODULE_MAP.get(t) == mod]
+            if not remaining:
+                defaults = {
+                    "Browser": "Web browser control",
+                    "System": "System monitor & control",
+                    "Memory": "Long-term memory & recall",
+                }
+                self.set_subagent_status(mod, "idle", defaults.get(mod, mod))
+
+        # Clear skill bulb
+        if tool_name in self._active_skills:
+            self._active_skills.discard(tool_name)
+            self._refresh_skills_display()
+
+        # Deactivate Skills module if no skills running
+        is_skill_tool = tool_name in self._active_skills
+        skill_related = tool_name == "skill_manager" or is_skill_tool
+        if skill_related:
+            still_running = any(
+                t == "skill_manager" or t in self._active_skills
+                for t in self._active_tools
+            )
+            if not still_running:
+                from skills.loader import get_loaded_skills
+                loaded = get_loaded_skills()
+                desc = f"{len(loaded)} skill(s) loaded" if loaded else "No skills learned yet"
+                status = "active" if loaded else "idle"
+                self.set_subagent_status("Skills", status, desc)
+
+        # Refresh the skills list after skill_manager finishes (may have added/removed)
+        if tool_name == "skill_manager":
+            self._load_skills_list()
+
         self._refresh_tools_display()
 
     def _refresh_tools_display(self):
@@ -1077,6 +1170,71 @@ class JarvisGUI:
                 tk.Label(row, text=tool, font=self.font_tiny,
                          fg=STATUS_SPEAKING, bg=PANEL_COLOR,
                          anchor="w").pack(side="left")
+
+        self.root.after(0, _do)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    #  LEARNED SKILLS PANEL
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _load_skills_list(self):
+        """Load dynamic skills list in a background thread."""
+        def _work():
+            try:
+                from skills.loader import get_loaded_skills
+                skills = get_loaded_skills()
+                info = []
+                for name, mod in sorted(skills.items()):
+                    desc = getattr(mod, "TOOL_DESC", "")[:45]
+                    info.append({"name": name, "desc": desc})
+                self._loaded_skills_info = info
+                self.root.after(0, self._refresh_skills_display)
+            except Exception:
+                pass
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def refresh_skills(self):
+        """Public method to reload the skills list display. Thread-safe."""
+        self._load_skills_list()
+
+    def _refresh_skills_display(self):
+        """Redraw the learned skills panel with bulb indicators."""
+        def _do():
+            if not hasattr(self, "_skills_inner"):
+                return
+            for w in self._skills_inner.winfo_children():
+                w.destroy()
+            if not self._loaded_skills_info:
+                tk.Label(self._skills_inner, text="No skills learned yet",
+                         font=self.font_tiny, fg=TEXT_DIM,
+                         bg=PANEL_COLOR).pack(anchor="w")
+                return
+            for skill in self._loaded_skills_info:
+                name = skill["name"]
+                desc = skill["desc"]
+                is_active = name in self._active_skills
+
+                row = tk.Frame(self._skills_inner, bg=PANEL_COLOR)
+                row.pack(fill="x", pady=1)
+
+                # Light bulb icon — bright yellow when active, dim when idle
+                bulb_color = SKILL_BULB_ON if is_active else SKILL_BULB_OFF
+                bulb = tk.Label(row, text="\U0001f4a1", font=self.font_tiny,
+                                fg=bulb_color, bg=PANEL_COLOR)
+                bulb.pack(side="left", padx=(0, 4))
+
+                # Glow effect on the name when active
+                name_color = SKILL_BULB_GLOW if is_active else TEXT_COLOR
+                tk.Label(row, text=name, font=self.font_tiny,
+                         fg=name_color, bg=PANEL_COLOR).pack(side="left")
+
+                # Description on the right
+                if desc and len(desc) > 25:
+                    desc = desc[:22] + "..."
+                tk.Label(row, text=desc, font=self.font_tiny,
+                         fg=TEXT_DIM if not is_active else SKILL_BULB_ON,
+                         bg=PANEL_COLOR).pack(side="right")
 
         self.root.after(0, _do)
 
@@ -1243,6 +1401,11 @@ class JarvisGUI:
     # ══════════════════════════════════════════════════════════════════════════
     #  API KEY PERSISTENCE
     # ══════════════════════════════════════════════════════════════════════════
+
+    def _poll_skills_periodic(self):
+        """Periodically refresh the skills list (new skills may be created mid-session)."""
+        self._load_skills_list()
+        self.root.after(15000, self._poll_skills_periodic)  # every 15s
 
     def _load_api_key(self) -> Optional[str]:
         try:

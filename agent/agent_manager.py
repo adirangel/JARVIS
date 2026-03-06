@@ -88,6 +88,7 @@ class Agent:
         self._on_result = on_result          # (agent_name, result) -> None
         self._on_status_change = on_status_change  # (agent_name, status, desc) -> None
         self._on_progress = on_progress      # (agent_name, message) -> None
+        self._on_interim_report: Optional[Callable[[str, str], None]] = None  # periodic reports to JARVIS
 
         # Message inbox
         self.inbox: List[AgentMessage] = []
@@ -158,6 +159,8 @@ class Agent:
                 self.result = self._run_tool()
             elif self.task.task_type == "multi_step":
                 self.result = self._run_multi_step()
+            elif self.task.task_type == "autonomous":
+                self.result = self._run_autonomous()
             else:
                 self.result = self._run_general()
 
@@ -240,13 +243,20 @@ class Agent:
             return f"Script error: {e}"
 
     def _run_monitor(self) -> str:
-        """Monitor a condition periodically and report."""
+        """Monitor a condition periodically and report.
+
+        Supports both shell commands AND JARVIS tools (browser_control, etc.).
+        Sends interim reports back to JARVIS after every check.
+        """
         condition = self.task.params.get("condition", "")
         interval = self.task.params.get("interval_seconds", 10)
         max_checks = self.task.params.get("max_checks", 30)
         command = self.task.params.get("command", "")
+        tool_name = self.task.params.get("tool_name", "")
+        tool_args = self.task.params.get("tool_args", {})
 
-        self._log_progress(f"Monitoring: {condition or command} every {interval}s")
+        source = condition or command or tool_name or "condition"
+        self._log_progress(f"Monitoring: {source} every {interval}s (max {max_checks} checks)")
         results = []
 
         for i in range(max_checks):
@@ -261,23 +271,281 @@ class Agent:
                 if msg.content.lower() in ("stop", "quit", "cancel"):
                     return f"Stopped by {msg.sender}. Collected {len(results)} readings."
 
-            if command:
+            # Run the check — either shell command or JARVIS tool
+            output = ""
+            check_label = f"Check {i+1}/{max_checks}"
+
+            if tool_name:
+                try:
+                    from tool_registry import execute_tool
+                    output = execute_tool(tool_name, tool_args)
+                    self._log_progress(f"{check_label}: {output[:120]}")
+                except Exception as e:
+                    output = f"Tool error: {e}"
+                    self._log_progress(f"{check_label}: error - {e}")
+            elif command:
                 try:
                     result = subprocess.run(
                         command, shell=True, capture_output=True, text=True, timeout=15
                     )
                     output = (result.stdout or "").strip()
-                    results.append(output)
-                    self._log_progress(f"Check {i+1}: {output[:100]}")
+                    self._log_progress(f"{check_label}: {output[:120]}")
                 except Exception as e:
-                    self._log_progress(f"Check {i+1}: error - {e}")
+                    output = f"Command error: {e}"
+                    self._log_progress(f"{check_label}: error - {e}")
 
+            if output:
+                results.append(output)
+
+            # Send interim report back to JARVIS so he can react in real-time
+            if output and self._on_interim_report:
+                try:
+                    report = (
+                        f"[Monitor '{self.name}' — {check_label}]\n"
+                        f"{output[:1500]}"
+                    )
+                    self._on_interim_report(self.name, report)
+                except Exception:
+                    pass
+
+            # Wait for next interval (interruptible)
             self._stop_event.wait(interval)
 
         summary = f"Monitoring complete. {len(results)} checks performed."
         if results:
             summary += f"\nLast reading: {results[-1][:200]}"
         return summary
+
+    # ── Autonomous agent ──────────────────────────────────────────────────
+
+    def _run_autonomous(self) -> str:
+        """Autonomous agent with its own LLM brain.
+
+        Loops: screenshot → think → act → report → repeat.
+        Uses Gemini text API for decision-making and can execute JARVIS tools.
+        Sends interim reports to JARVIS after every iteration.
+        """
+        from google.genai import types as gtypes
+
+        goal = self.task.params.get("goal", self.task.description)
+        max_iterations = self.task.params.get("max_iterations", 20)
+        tools_allowed = self.task.params.get("tools", ["browser_control"])
+
+        self._log_progress(f"Autonomous mode. Goal: {goal}")
+        self._log_progress(f"Max iterations: {max_iterations}, Tools: {tools_allowed}")
+
+        conversation: list = []
+        iteration_reports: list = []
+        last_action_results: list = []
+
+        system_instruction = (
+            "You are an autonomous browser agent working for JARVIS (an AI voice assistant). "
+            f"Your goal: {goal}\n\n"
+            "Each turn you receive a screenshot of the current screen. "
+            "Decide what to do next to achieve the goal.\n\n"
+            "Respond ONLY with a JSON object (no markdown, no extra text):\n"
+            "{\n"
+            '  "thought": "What I observe and my reasoning for next action",\n'
+            '  "actions": [\n'
+            '    {"tool": "browser_control", "args": {"action": "...", ...}}\n'
+            '  ],\n'
+            '  "report": "Brief status update for the user (1-2 sentences)",\n'
+            '  "done": false\n'
+            "}\n\n"
+            "Available browser_control actions:\n"
+            "- go_to: Navigate to URL. Args: {action:'go_to', url:'...'}\n"
+            "- click: Click at coordinates. Args: {action:'click', selector:'x,y'}\n"
+            "- double_click: Double-click. Args: {action:'double_click', selector:'x,y'}\n"
+            "- type: Type text into focused field. Args: {action:'type', text:'...'}\n"
+            "- type_and_enter: Type and press Enter. Args: {action:'type_and_enter', text:'...'}\n"
+            "- press_key: Press a key. Args: {action:'press_key', key:'tab'|'enter'|'escape'|etc}\n"
+            "- hotkey: Key combo. Args: {action:'hotkey', keys:'ctrl+a'|'ctrl+enter'}\n"
+            "- scroll: Scroll page. Args: {action:'scroll', direction:'down'|'up'}\n"
+            "- wait: Wait for page load. Args: {action:'wait', seconds:2}\n"
+            "- new_tab: Open tab. Args: {action:'new_tab', url:'...'}\n"
+            "- focus: Bring browser to front. Args: {action:'focus'}\n"
+            "- back / forward / refresh: Navigation\n\n"
+            "Rules:\n"
+            "- Execute 1-3 actions per turn, then wait for the next screenshot\n"
+            "- For chat interfaces: click the input box or Tab to it, then type_and_enter\n"
+            "- After typing/clicking, your next turn shows the updated screen\n"
+            "- Set done=true ONLY when the goal is fully achieved or clearly impossible\n"
+            "- Keep reports concise — the user hears them spoken aloud\n"
+            "- If something fails, try a different approach\n"
+            "- Coordinates in screenshots are screen pixels (top-left = 0,0)\n"
+        )
+
+        for i in range(max_iterations):
+            if self._stop_event.is_set():
+                self._log_progress("Stopped by user")
+                break
+
+            # Check for messages from JARVIS / user
+            jarvis_messages: list = []
+            for msg in self.get_messages():
+                self._log_progress(f"Message from {msg.sender}: {msg.content}")
+                if msg.content.lower() in ("stop", "quit", "cancel"):
+                    return f"Stopped by {msg.sender} after {i} iterations."
+                jarvis_messages.append(f"[Message from {msg.sender}]: {msg.content}")
+
+            # 1. Capture screen
+            self._log_progress(f"Iteration {i + 1}/{max_iterations}: Capturing screen...")
+            screenshot_part = self._take_screenshot_part()
+            if screenshot_part is None:
+                self._log_progress("Screenshot failed, retrying in 3s...")
+                self._stop_event.wait(3)
+                continue
+
+            # 2. Build user message: action results + messages + screenshot
+            parts: list = []
+            if last_action_results:
+                parts.append("Results from your last actions:\n" + "\n".join(last_action_results))
+            for jm in jarvis_messages:
+                parts.append(jm)
+            parts.append(f"Iteration {i + 1}/{max_iterations}. Current screen:")
+            parts.append(screenshot_part)
+
+            content_parts = [
+                gtypes.Part(text=p) if isinstance(p, str) else p
+                for p in parts
+            ]
+            conversation.append(gtypes.Content(role="user", parts=content_parts))
+
+            # Trim conversation to avoid token overload (keep last ~12 exchanges)
+            if len(conversation) > 24:
+                conversation = conversation[:2] + conversation[-22:]
+
+            # 3. Ask LLM what to do
+            self._log_progress(f"Iteration {i + 1}: Thinking...")
+            try:
+                response_text = self._agent_llm_call(system_instruction, conversation)
+            except Exception as e:
+                self._log_progress(f"LLM error: {e}")
+                conversation.pop()  # Remove user msg to keep alternation valid
+                self._stop_event.wait(5)
+                continue
+
+            conversation.append(gtypes.Content(role="model", parts=[gtypes.Part(text=response_text)]))
+
+            # 4. Parse JSON response
+            try:
+                json_str = response_text.strip()
+                if json_str.startswith("```"):
+                    json_str = json_str.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+                decision = json.loads(json_str)
+            except (json.JSONDecodeError, IndexError, ValueError) as e:
+                self._log_progress(f"Bad JSON from LLM: {e}")
+                last_action_results = [
+                    f"(Your response was not valid JSON: {str(e)[:80]}. "
+                    "Please respond with ONLY a JSON object.)"
+                ]
+                continue
+
+            thought = decision.get("thought", "")
+            actions = decision.get("actions", [])
+            report = decision.get("report", "")
+            done = decision.get("done", False)
+
+            self._log_progress(f"Thought: {thought[:120]}")
+
+            # 5. Execute actions
+            last_action_results = []
+            for act in actions:
+                tool = act.get("tool", "browser_control")
+                tool_args = act.get("args", {})
+
+                if tool not in tools_allowed:
+                    last_action_results.append(f"Tool '{tool}' not allowed. Allowed: {tools_allowed}")
+                    continue
+
+                try:
+                    from tool_registry import execute_tool
+                    result = execute_tool(tool, tool_args)
+                    short = result[:200] if result else "(no output)"
+                    last_action_results.append(f"{tool}({tool_args.get('action', '')}): {short}")
+                    self._log_progress(f"  -> {tool}({tool_args.get('action', '')}): {result[:80]}")
+                except Exception as e:
+                    last_action_results.append(f"{tool} error: {e}")
+                    self._log_progress(f"  -> {tool} error: {e}")
+
+                time.sleep(0.3)
+
+            # 6. Send interim report to JARVIS
+            if report and self._on_interim_report:
+                try:
+                    full_report = (
+                        f"[Autonomous Agent '{self.name}' — Step {i + 1}/{max_iterations}]\n"
+                        f"{report[:1500]}"
+                    )
+                    self._on_interim_report(self.name, full_report)
+                except Exception:
+                    pass
+            if report:
+                iteration_reports.append(report)
+
+            # 7. Done?
+            if done:
+                self._log_progress(f"Goal achieved: {report}")
+                break
+
+            # Brief pause before next iteration
+            self._stop_event.wait(1.5)
+
+        summary = f"Autonomous agent finished after {len(iteration_reports)} iterations."
+        if iteration_reports:
+            summary += f"\nFinal: {iteration_reports[-1][:500]}"
+        return summary
+
+    def _take_screenshot_part(self):
+        """Capture screen and return as a genai Part for LLM input."""
+        try:
+            from PIL import ImageGrab
+            import io
+            from google.genai import types as gtypes
+
+            img = ImageGrab.grab()
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            return gtypes.Part.from_bytes(data=buf.getvalue(), mime_type="image/png")
+        except Exception as e:
+            self._log_progress(f"Screenshot error: {e}")
+            return None
+
+    def _agent_llm_call(self, system_instruction: str, conversation: list) -> str:
+        """Call Gemini text API for autonomous decision-making."""
+        from google import genai
+        from google.genai import types as gtypes
+
+        api_key = self._get_api_key()
+        client = genai.Client(api_key=api_key)
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash-preview-05-20",
+            contents=conversation,
+            config=gtypes.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=0.3,
+            ),
+        )
+        return response.text or ""
+
+    def _get_api_key(self) -> str:
+        """Load the Gemini API key from config files."""
+        for path in ["config/api_keys.json", "api_key.txt"]:
+            try:
+                if path.endswith(".json"):
+                    with open(path) as f:
+                        key = json.load(f).get("gemini_api_key", "")
+                else:
+                    with open(path) as f:
+                        key = f.read().strip()
+                if key:
+                    return key
+            except Exception:
+                continue
+        raise RuntimeError("No Gemini API key found for autonomous agent")
+
+    # ── Research / Tool / Multi-step runners ──────────────────────────────────
 
     def _run_research(self) -> str:
         """Research a topic using web search."""
@@ -401,6 +669,8 @@ class AgentManager:
         self.on_agent_result: Optional[Callable[[str, str], None]] = None
         # Callback for live progress updates (agent_name, message)
         self.on_agent_progress: Optional[Callable[[str, str], None]] = None
+        # Callback for periodic monitor reports sent to Gemini
+        self.on_agent_interim_report: Optional[Callable[[str, str], None]] = None
 
         # Load persisted agents from previous sessions
         self._load_persisted_agents()
@@ -534,6 +804,7 @@ class AgentManager:
                 on_status_change=self._on_agent_status_change,
                 on_progress=self._on_agent_progress,
             )
+            agent._on_interim_report = self._on_agent_interim_report
 
             self._agents[name] = agent
             agent.start()
@@ -687,6 +958,14 @@ class AgentManager:
                 self.on_agent_progress(agent_name, message)
             except Exception as e:
                 logger.error(f"[AgentManager] Progress callback error: {e}")
+
+    def _on_agent_interim_report(self, agent_name: str, report: str):
+        """Called when a monitor agent sends a periodic check result."""
+        if self.on_agent_interim_report:
+            try:
+                self.on_agent_interim_report(agent_name, report)
+            except Exception as e:
+                logger.error(f"[AgentManager] Interim report callback error: {e}")
 
     def _on_agent_status_change(self, agent_name: str, status: str, desc: str):
         """Called when an agent's status changes."""

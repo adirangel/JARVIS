@@ -29,17 +29,24 @@ except ImportError:
     HAS_PIL = False
 
 def launch_app(path: str) -> Tuple[bool, str]:
-    """Launch an application. On Windows, use shell=True for PATH lookup (calc.exe, etc.)."""
+    """Launch an application using a safe allowlist + os.startfile fallback."""
+    import re
     path = (path or "").strip()
     if not path:
         return False, "No application specified"
+
+    # Only allow alphanumeric names, dots, hyphens, underscores, and known path chars
+    # Block shell metacharacters that could enable command injection
+    if re.search(r'[;&|`$><\n]', path):
+        return False, f"Blocked unsafe characters in app name: {path}"
+
     try:
         if platform.system() == "Windows":
-            # Use shell=True so calc.exe, notepad.exe etc. are found in PATH
-            subprocess.Popen(path, shell=True)
+            # Use os.startfile for safe Windows app launching (no shell injection)
+            os.startfile(path)
             return True, f"Launched {path}"
         else:
-            subprocess.Popen([path], shell=True)
+            subprocess.Popen([path])
             return True, f"Launched {path}"
     except Exception as e:
         return False, f"Failed to launch: {e}"

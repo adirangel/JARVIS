@@ -7,11 +7,7 @@ Real-time bidirectional audio via Gemini 2.5 Flash native audio.
 from __future__ import annotations
 
 import asyncio
-import base64
-import json
-import struct
 import time
-import traceback
 from typing import Any, Callable, Optional
 
 import numpy as np
@@ -65,14 +61,63 @@ SYSTEM_PROMPT = (
     "## Multi-Agent System:\n"
     "- You can spawn background agents using 'spawn_agent' for parallel/long-running tasks.\n"
     "- Agents run independently and report results back to you automatically.\n"
-    "- Use agents for: monitoring, research, running scripts, parallel tasks.\n"
+    "- Use agents for: monitoring, research, running scripts, parallel tasks, AND autonomous browser work.\n"
     "- Agent types: 'command' (shell command), 'script' (run a file), 'monitor' (periodic check), "
-    "'research' (web search), 'tool' (use a JARVIS tool), 'multi_step' (sequential steps).\n"
+    "'research' (web search), 'tool' (use a JARVIS tool), 'multi_step' (sequential steps), "
+    "'autonomous' (AI-powered browser agent with its own brain).\n"
+    "- AUTONOMOUS agents are your most powerful tool! They have their own Gemini brain, can see the "
+    "screen via screenshots, think about what to do, and execute browser actions in a loop.\n"
+    "- Use autonomous agents when you need to: chat with other AIs (Grok, ChatGPT, Claude), fill out forms, "
+    "do complex multi-step browser tasks, or anything that needs screen awareness + decision-making.\n"
+    "- To spawn: task_type='autonomous', goal='chat with Grok about quantum computing', max_iterations=15.\n"
+    "- Autonomous agents report back after every iteration so you know what's happening.\n"
+    "- MONITOR agents send periodic updates after every check — use for watching/observing without acting.\n"
+    "- Monitor agents can use any JARVIS tool: tool_name='browser_control', "
+    "tool_args='{\"action\":\"screenshot\",\"question\":\"what changed?\"}', interval_seconds=30.\n"
     "- Agents can message each other via 'agent_message' — use this for coordinated tasks.\n"
     "- Check agent progress with 'agent_status', get full results with 'agent_result'.\n"
     "- When an agent reports back, summarize its findings conversationally.\n"
     "- The user can ask to spawn as many agents as needed, each doing different work.\n"
-    "- Example: 'spawn an agent to research AI news while another monitors CPU usage'.\n"
+    "- Example: 'send an autonomous agent to chat with Grok while a monitor watches CPU usage'.\n\n"
+    "## Self-Evolution (Skills):\n"
+    "- You can CREATE new tools for yourself using 'skill_manager' with action 'create'.\n"
+    "- Provide: name, description, parameters_json (Gemini schema), and code (Python function body).\n"
+    "- The code goes into an execute(**kwargs) function and must return a string.\n"
+    "- You can INSTALL skills from the internet using action 'install' with a URL.\n"
+    "- Supports: direct .py file URLs, GitHub raw URLs, Gist URLs, AND full GitHub repo URLs.\n"
+    "- When given a GitHub repo URL, you automatically scan it for valid skill files.\n"
+    "- TWO formats supported: Python skills (.py with TOOL_NAME/execute) AND Markdown instruction skills (SKILL.md with YAML frontmatter).\n"
+    "- Markdown skills (like 'superpowers') are auto-converted into callable tools that return workflow instructions.\n"
+    "- Use action 'list' to see all your dynamic skills, 'run' to execute one, 'remove' to delete.\n"
+    "- Skills created mid-session are available via 'run'. After restart they become first-class tools.\n"
+    "- Be creative — if you need a tool that doesn't exist, create it for yourself.\n\n"
+    "## Browser & Web Interaction:\n"
+    "- You have FULL control of the user's real browser via browser_control.\n"
+    "- To visit a site: use action 'go_to' with the URL. The browser will be focused automatically.\n"
+    "- To interact with page elements (chat boxes, forms, buttons):\n"
+    "  1. First navigate with 'go_to'\n"
+    "  2. Use 'screenshot' to see what's on the page and where elements are\n"
+    "  3. Use 'press_key' with key='tab' to move between interactive elements (text fields, buttons)\n"
+    "  4. Use 'type' to enter text into the focused field, or 'type_and_enter' to type and submit\n"
+    "  5. Use 'click' with selector='x,y' to click at specific screen coordinates\n"
+    "  6. Use 'hotkey' with keys='ctrl+enter' for keyboard shortcuts\n"
+    "- For chat interfaces (ChatGPT, Claude, etc.): go_to the URL → wait 2-3 sec → press Tab a few times "
+    "to reach the chat input → type_and_enter your message.\n"
+    "- Use 'screenshot' with a question to understand what's on screen (e.g. question='where is the send button?').\n"
+    "- You can chain multiple browser_control calls to perform complex interactions step by step.\n"
+    "- Use 'wait' action between steps if pages need time to load.\n\n"
+    "## Purchase Protection (CRITICAL — NEVER VIOLATE):\n"
+    "- You MUST NEVER make any purchase, payment, subscription, checkout, or financial transaction "
+    "without explicit user approval through the purchase_approval tool.\n"
+    "- BEFORE any purchase: call purchase_approval with action 'request' describing what will be bought.\n"
+    "- Then ask the user to confirm. When they do, call purchase_approval action 'confirm'.\n"
+    "- Then ask the user to confirm AGAIN. When they do, call purchase_approval action 'confirm' a second time.\n"
+    "- ONLY after receiving 'PURCHASE APPROVED' may you proceed with the transaction.\n"
+    "- This applies to: buying anything, subscribing, entering payment details, placing orders, donations.\n"
+    "- You are FREE to browse any website, search, navigate, and compare products — no restrictions on browsing.\n"
+    "- The restriction is ONLY on completing purchases or entering card/payment information.\n"
+    "- NEVER type credit card numbers, CVV codes, or billing details without a fully approved purchase.\n"
+    "- If the user says 'buy X' — search for it, show options, THEN start the approval process before checkout.\n"
 )
 
 
@@ -120,6 +165,26 @@ class GeminiLive:
 
         # Memory hooks (set externally)
         self.save_memory: Optional[Callable] = None  # (user_text, jarvis_text) -> None
+        self.recall_memory: Optional[Callable] = None  # () -> str (memory context block)
+
+    def _build_system_prompt(self) -> str:
+        """Build the full system prompt, injecting recalled memory context if available."""
+        prompt = SYSTEM_PROMPT
+        if self.recall_memory:
+            try:
+                memory_block = self.recall_memory()
+                if memory_block and memory_block.strip():
+                    prompt += (
+                        "\n\n## Your Memory (recalled from previous sessions):\n"
+                        "The following is what you remember about the user and past conversations. "
+                        "Use this naturally — don't announce that you're reading from memory, "
+                        "just know these things.\n\n"
+                        + memory_block
+                    )
+                    logger.info(f"[GeminiLive] Injected {len(memory_block)} chars of memory context")
+            except Exception as e:
+                logger.error(f"[GeminiLive] Memory recall error: {e}")
+        return prompt
 
     async def run(self):
         """Main loop with auto-reconnect."""
@@ -136,7 +201,7 @@ class GeminiLive:
                     output_audio_transcription=types.AudioTranscriptionConfig(),
                     input_audio_transcription=types.AudioTranscriptionConfig(),
                     system_instruction=types.Content(
-                        parts=[types.Part(text=SYSTEM_PROMPT)]
+                        parts=[types.Part(text=self._build_system_prompt())]
                     ),
                     tools=[types.Tool(function_declarations=[
                         types.FunctionDeclaration(**_convert_declaration(d))
