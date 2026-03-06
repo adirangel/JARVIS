@@ -520,7 +520,7 @@ class Agent:
         client = genai.Client(api_key=api_key)
 
         response = client.models.generate_content(
-            model="gemini-2.5-flash-preview-05-20",
+            model="gemini-2.5-flash",
             contents=conversation,
             config=gtypes.GenerateContentConfig(
                 system_instruction=system_instruction,

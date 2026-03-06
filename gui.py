@@ -1034,9 +1034,12 @@ class JarvisGUI:
                 from agent.agent_manager import AgentManager
                 mgr = AgentManager()
                 agents = mgr.list_agents()
+                live_names = set()
+                now = time.time()
                 for a in agents:
                     name = a["name"]
                     status = a["status"]
+                    live_names.add(name)
                     desc = a.get("task", "")[:40]
                     result_preview = a.get("result", "")[:40]
                     if status == "completed" and result_preview:
@@ -1046,11 +1049,26 @@ class JarvisGUI:
                     self._user_agents[name] = {
                         "status": status,
                         "desc": desc,
-                        "updated": time.time(),
+                        "updated": now,
                     }
-                # Refresh UI
-                if hasattr(self, "_user_agents_frame"):
-                    self._refresh_user_agents()
+                # Remove agents no longer in the manager
+                for name in list(self._user_agents):
+                    if name not in live_names:
+                        del self._user_agents[name]
+                    # Auto-expire completed/stopped/failed agents after 60s
+                    elif self._user_agents[name]["status"] in ("completed", "stopped", "failed"):
+                        if now - self._user_agents[name]["updated"] > 60:
+                            try:
+                                mgr.remove_agent(name)
+                            except Exception:
+                                pass
+                            self._user_agents.pop(name, None)
+                # Refresh UI only if data changed
+                snapshot = str(self._user_agents)
+                if snapshot != getattr(self, "_agents_snapshot", ""):
+                    self._agents_snapshot = snapshot
+                    if hasattr(self, "_user_agents_frame"):
+                        self._refresh_user_agents()
             except Exception:
                 pass
 

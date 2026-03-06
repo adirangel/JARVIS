@@ -52,6 +52,17 @@ SYSTEM_PROMPT = (
     "- If multiple tools are needed, call them sequentially.\n"
     "- For ambiguous requests, prefer the most likely intended tool.\n"
     "- Never say you can't do something if a tool exists for it.\n\n"
+    "## Language & Speech Recognition:\n"
+    "- The user speaks mixed Hebrew and English. Hebrew may be transcribed imperfectly by the audio model.\n"
+    "- When you receive garbled or unclear Hebrew, infer the most likely intent from conversation context.\n"
+    "- Common Hebrew patterns: 'תפתח' (open), 'תסגור' (close), 'תראה לי' (show me), 'תחפש' (search), "
+    "'תכתוב' (write/type), 'תעצור' (stop), 'מה קורה' (what's happening), 'תשלח' (send), "
+    "'תגיד ל' (tell/say to), 'תריץ' (run), 'תמחק' (delete), 'תוסיף' (add).\n"
+    "- Hebrew tech terms and proper nouns (app names, websites) are often misheard — "
+    "use context to disambiguate. Example: 'גרוק' = Grok, 'כרום' = Chrome.\n"
+    "- If you genuinely cannot determine what the user said, ask for brief clarification "
+    "rather than guessing wrong and executing the wrong action.\n"
+    "- Always respond in the same language the user is speaking in that turn.\n\n"
     "## Script Execution Rules:\n"
     "- When asked to run/execute a file or script, use code_helper with action 'run'.\n"
     "- The script will run in a visible way and return its output.\n"
@@ -151,7 +162,7 @@ class GeminiLive:
 
         # Echo suppression
         self._mic_level: float = 0.0          # Current mic RMS level (0..1)
-        self._echo_threshold: float = 0.15    # Mic level must exceed this during playback to count as real speech
+        self._echo_threshold: float = 0.35    # Mic level must exceed this during hysteresis to count as real speech
         self._silence_after_speak: float = 0.0  # Timestamp when JARVIS stopped speaking
 
         # PyAudio
@@ -307,9 +318,10 @@ class GeminiLive:
     async def _send_realtime(self):
         """Stream microphone audio to Gemini session.
 
-        Echo suppression: while JARVIS is speaking (or within 0.3s after),
-        only forward audio that is loud enough to be a genuine user
-        interruption, not speaker bleed-through.
+        Echo suppression:
+        - While JARVIS is actively speaking: drop ALL mic audio.
+          (User interruption is handled by Gemini's built-in VAD.)
+        - For 1.5s after JARVIS stops: only pass audio louder than threshold.
         """
         while self._running and self._session_alive:
             try:
@@ -318,10 +330,13 @@ class GeminiLive:
                 )
 
                 # ── Echo gate ─────────────────────────────────────────
-                if self._is_speaking or (time.time() - self._silence_after_speak < 0.3):
-                    # During playback: only let through genuinely loud input
+                if self._is_speaking:
+                    continue  # full mute while JARVIS speaks
+
+                if time.time() - self._silence_after_speak < 1.5:
+                    # Hysteresis window: only pass genuinely loud input
                     if self._mic_level < self._echo_threshold:
-                        continue  # swallow this chunk — it's echo
+                        continue
 
                 await self.session.send_realtime_input(
                     media=types.Blob(data=data, mime_type="audio/pcm")
@@ -403,6 +418,27 @@ class GeminiLive:
                                 self.on_user_turn_complete(current_user_text.strip())
                             if current_jarvis_text.strip() and self.on_jarvis_turn_complete:
                                 self.on_jarvis_turn_complete()
+
+                            # Hebrew context hint: if transcription contains Hebrew,
+                            # nudge Gemini with a text hint to reinterpret in context.
+                            ut = current_user_text.strip()
+                            if ut and any('\u0590' <= c <= '\u05FF' for c in ut):
+                                try:
+                                    await self.session.send_client_content(
+                                        turns=types.Content(
+                                            role="user",
+                                            parts=[types.Part(text=(
+                                                f"[My last message was in Hebrew. "
+                                                f"The transcription heard: \"{ut}\". "
+                                                f"Please interpret this in Hebrew context "
+                                                f"and respond appropriately.]"
+                                            ))],
+                                        ),
+                                        turn_complete=True,
+                                    )
+                                except Exception:
+                                    pass
+
                             # Save to memory
                             if (current_user_text.strip() or current_jarvis_text.strip()) and self.save_memory:
                                 try:
