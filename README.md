@@ -411,14 +411,6 @@ On first launch, JARVIS prompts for your Gemini API key through the GUI. The key
 
 You can get a free Gemini API key at [ai.google.dev](https://ai.google.dev).
 
-### Config Files
-
-| File | Purpose |
-|------|---------|
-| `config.example.yaml` | Reference template with all available settings |
-| `config.yaml` | Your local configuration (optional — JARVIS works with defaults) |
-
-The config supports settings for LLM provider, voice parameters, wake word sensitivity, memory paths, tool restrictions, and debug options. For most users, the defaults work out of the box.
 
 ---
 
@@ -437,7 +429,7 @@ All installed automatically by `python setup.py`:
 
 ```
 google-genai    pyaudio       pyautogui     pynput        keyboard
-mouse           chromadb      numpy         loguru        PyYAML
+mouse           chromadb      numpy         loguru
 psutil          httpx         Pillow        python-bidi
 ```
 
