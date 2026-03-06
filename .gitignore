@@ -89,6 +89,8 @@ config/settings.yaml
 
 # Legacy files
 agent/timing_context.py
+agent/utils.py
+memory/short_term.py
 docs/plans/
 ui/
 

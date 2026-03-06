@@ -7,11 +7,7 @@ Real-time bidirectional audio via Gemini 2.5 Flash native audio.
 from __future__ import annotations
 
 import asyncio
-import base64
-import json
-import struct
 import time
-import traceback
 from typing import Any, Callable, Optional
 
 import numpy as np
@@ -65,14 +61,24 @@ SYSTEM_PROMPT = (
     "## Multi-Agent System:\n"
     "- You can spawn background agents using 'spawn_agent' for parallel/long-running tasks.\n"
     "- Agents run independently and report results back to you automatically.\n"
-    "- Use agents for: monitoring, research, running scripts, parallel tasks.\n"
+    "- Use agents for: monitoring, research, running scripts, parallel tasks, AND autonomous browser work.\n"
     "- Agent types: 'command' (shell command), 'script' (run a file), 'monitor' (periodic check), "
-    "'research' (web search), 'tool' (use a JARVIS tool), 'multi_step' (sequential steps).\n"
+    "'research' (web search), 'tool' (use a JARVIS tool), 'multi_step' (sequential steps), "
+    "'autonomous' (AI-powered browser agent with its own brain).\n"
+    "- AUTONOMOUS agents are your most powerful tool! They have their own Gemini brain, can see the "
+    "screen via screenshots, think about what to do, and execute browser actions in a loop.\n"
+    "- Use autonomous agents when you need to: chat with other AIs (Grok, ChatGPT, Claude), fill out forms, "
+    "do complex multi-step browser tasks, or anything that needs screen awareness + decision-making.\n"
+    "- To spawn: task_type='autonomous', goal='chat with Grok about quantum computing', max_iterations=15.\n"
+    "- Autonomous agents report back after every iteration so you know what's happening.\n"
+    "- MONITOR agents send periodic updates after every check — use for watching/observing without acting.\n"
+    "- Monitor agents can use any JARVIS tool: tool_name='browser_control', "
+    "tool_args='{\"action\":\"screenshot\",\"question\":\"what changed?\"}', interval_seconds=30.\n"
     "- Agents can message each other via 'agent_message' — use this for coordinated tasks.\n"
     "- Check agent progress with 'agent_status', get full results with 'agent_result'.\n"
     "- When an agent reports back, summarize its findings conversationally.\n"
     "- The user can ask to spawn as many agents as needed, each doing different work.\n"
-    "- Example: 'spawn an agent to research AI news while another monitors CPU usage'.\n\n"
+    "- Example: 'send an autonomous agent to chat with Grok while a monitor watches CPU usage'.\n\n",
     "## Self-Evolution (Skills):\n"
     "- You can CREATE new tools for yourself using 'skill_manager' with action 'create'.\n"
     "- Provide: name, description, parameters_json (Gemini schema), and code (Python function body).\n"

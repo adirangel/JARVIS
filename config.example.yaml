@@ -2,7 +2,7 @@
 # =========================================================
 
 # LLM: Ollama (local) or OpenRouter (API)
-# For OpenRouter: provider: "openrouter", model: "stepfun/step-3.5-flash:free", api_key: "sk-or-..."
+# For OpenRouter: provider: "openrouter", model: "your-model", api_key: "your-api-key-here"
 llm:
   provider: "ollama"
   model: "qwen3:4b"

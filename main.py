@@ -144,19 +144,42 @@ def start_gemini(api_key: str, gui: JarvisGUI):
 
         agent_mgr.on_agent_status = _on_agent_status
 
-        # When an agent reports a result → send it to JARVIS via Gemini session
-        def _on_agent_result(agent_name: str, result: str):
+        # Queue for agent messages when session is temporarily unavailable
+        _pending_agent_msgs: list[str] = []
+
+        def _send_agent_msg_to_gemini(msg: str):
+            """Send agent message to Gemini, or queue it if session is down."""
             if _loop and engine.session:
-                msg = (
-                    f"[Agent Report] Agent '{agent_name}' has completed its task. "
-                    f"Result: {result[:2000]}"
-                )
+                # Flush any queued messages first
+                while _pending_agent_msgs:
+                    queued = _pending_agent_msgs.pop(0)
+                    asyncio.run_coroutine_threadsafe(
+                        engine.send_text(queued), _loop
+                    )
                 asyncio.run_coroutine_threadsafe(
                     engine.send_text(msg), _loop
                 )
-                gui.log_activity(f"Agent '{agent_name}' reported result", "agent")
+            else:
+                _pending_agent_msgs.append(msg)
+                logger.debug(f"[Agents] Queued message (session unavailable): {msg[:80]}")
+
+        # When an agent reports a result → send it to JARVIS via Gemini session
+        def _on_agent_result(agent_name: str, result: str):
+            msg = (
+                f"[Agent Report] Agent '{agent_name}' has completed its task. "
+                f"Result: {result[:2000]}"
+            )
+            _send_agent_msg_to_gemini(msg)
+            gui.log_activity(f"Agent '{agent_name}' reported result", "agent")
 
         agent_mgr.on_agent_result = _on_agent_result
+
+        # When a monitor agent sends a periodic update → forward to JARVIS
+        def _on_agent_interim_report(agent_name: str, report: str):
+            _send_agent_msg_to_gemini(report)
+            gui.log_activity(f"Agent '{agent_name}' interim report", "agent")
+
+        agent_mgr.on_agent_interim_report = _on_agent_interim_report
 
         # Wire live progress updates from agents
         def _on_agent_progress(agent_name: str, message: str):

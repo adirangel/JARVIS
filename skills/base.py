@@ -9,8 +9,6 @@ Skills must export:
 
 from __future__ import annotations
 
-from typing import Any, Callable
-
 # Example skill structure (for code generation prompt):
 # TOOL_NAME = "my_skill"
 # TOOL_DESC = "Does something useful."

@@ -4,7 +4,7 @@
 
 **Just A Rather Very Intelligent System**
 
-A real-time AI voice assistant powered by Google Gemini Live — with 28 tools, forever memory, autonomous agents, and an Iron Man HUD.
+A real-time AI voice assistant powered by Google Gemini Live — with 30+ tools, forever memory, autonomous AI agents, self-evolving skills, and an Iron Man HUD.
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](https://python.org)
 [![Gemini 2.5 Flash](https://img.shields.io/badge/Gemini_2.5_Flash-Native_Audio-4285F4.svg)](https://ai.google.dev)
@@ -15,7 +15,7 @@ A real-time AI voice assistant powered by Google Gemini Live — with 28 tools, 
 
 **Talk to your computer like Tony Stark talks to JARVIS.**
 
-JARVIS listens through your microphone, thinks with Gemini, controls your PC with 28 tools, remembers everything forever, and responds with Paul Bettany's calm British wit — all in a single `python main.py`.
+JARVIS listens through your microphone, thinks with Gemini, controls your PC with 30+ tools, remembers everything forever, spawns autonomous AI agents, evolves new skills on the fly — and responds with Paul Bettany's calm British wit — all in a single `python main.py`.
 
 </div>
 
@@ -27,9 +27,11 @@ JARVIS listens through your microphone, thinks with Gemini, controls your PC wit
 - [Quick Start](#quick-start)
 - [How It Works](#how-it-works)
 - [The Iron Man HUD](#the-iron-man-hud)
-- [Tools (28)](#tools-28)
+- [Tools (30+)](#tools-30)
 - [Memory System](#memory-system)
 - [Agent System](#agent-system)
+- [Self-Evolution (Skills)](#self-evolution-skills)
+- [Security](#security)
 - [Project Structure](#project-structure)
 - [Configuration](#configuration)
 - [Requirements](#requirements)
@@ -49,10 +51,12 @@ JARVIS is a **voice-controlled AI assistant** inspired by Tony Stark's companion
 |---------|-------------|
 | **Real-Time Voice** | Gemini 2.5 Flash native audio — talk naturally, JARVIS responds instantly in the "Charon" voice |
 | **Bilingual** | English and Hebrew — JARVIS auto-detects and responds in the language you speak |
-| **28 Tools** | Launch apps, browse the web, control mouse/keyboard, manage files, run code, set reminders, and much more |
+| **30+ Tools** | Launch apps, browse the web, control mouse/keyboard, manage files, run code, set reminders, and much more |
 | **Forever Memory** | SQLite + ChromaDB vector store — JARVIS remembers your name, preferences, and past conversations across sessions |
-| **Autonomous Agents** | Spawn background agents for long-running tasks (monitoring, research, multi-step workflows) |
+| **Autonomous Agents** | Spawn AI-powered agents with their own Gemini brain — they see the screen, think, act, and report back |
+| **Self-Evolution** | JARVIS can create new tools for itself at runtime, or install skills from GitHub repos |
 | **Iron Man HUD** | Tkinter GUI with animated waveform, system gauges, conversation log, Mission Control panel |
+| **Purchase Protection** | Financial transactions require explicit user approval — JARVIS will never spend money without asking |
 | **Pure Python** | Single command to run — no Node.js, no Docker, no complex infrastructure |
 
 ---
@@ -156,9 +160,9 @@ On first run, an animated arc-reactor API key entry screen appears.
 
 ---
 
-## Tools (28)
+## Tools (30+)
 
-JARVIS can control your computer through 28 built-in tools. When you ask JARVIS to do something, Gemini automatically decides which tool to call.
+JARVIS can control your computer through 30+ built-in tools. When you ask JARVIS to do something, Gemini automatically decides which tool to call.
 
 ### Computer & Apps (6)
 
@@ -176,7 +180,7 @@ JARVIS can control your computer through 28 built-in tools. When you ask JARVIS 
 | Tool | What It Does |
 |------|-------------|
 | `web_search` | Search the web via DuckDuckGo — returns titles + snippets |
-| `browser_control` | Full browser automation using your real Chrome/Edge — navigate, search, click, type, fill forms, manage tabs |
+| `browser_control` | Full browser automation using your real Chrome/Edge — navigate, click, type, fill forms, take screenshots with AI vision analysis, press keys, use hotkeys, manage tabs |
 | `weather_report` | Current weather for any city (Open-Meteo API) — temperature, humidity, wind |
 | `news` | Get latest news headlines by topic |
 
@@ -197,7 +201,7 @@ JARVIS can control your computer through 28 built-in tools. When you ask JARVIS 
 |------|-------------|
 | `file_controller` | List, create, delete, move, copy, rename, read, write, search files + create directories |
 | `code_helper` | Write, edit, read, explain, and run code files (with visible terminal output) |
-| `cmd_control` | Execute any shell command (CMD/PowerShell), optionally in a visible terminal |
+| `cmd_control` | Execute shell commands (CMD/PowerShell), optionally in a visible terminal |
 
 ### Media & Utilities (3)
 
@@ -217,12 +221,19 @@ JARVIS can control your computer through 28 built-in tools. When you ask JARVIS 
 
 | Tool | What It Does |
 |------|-------------|
-| `spawn_agent` | Create a background agent (types: command, script, monitor, research, tool, multi-step) |
+| `spawn_agent` | Create a background agent (types: command, script, monitor, autonomous, research, tool, multi-step) |
 | `agent_status` | Check the status of one or all running agents |
 | `agent_result` | Get the full result from a completed agent |
 | `stop_agent` | Stop a running agent |
 | `agent_message` | Send messages between agents or broadcast to all |
 | `remove_agent` | Remove a stopped or completed agent from the registry |
+
+### Self-Evolution (2)
+
+| Tool | What It Does |
+|------|-------------|
+| `skill_manager` | Create new tools at runtime, install skills from GitHub repos or URLs, list/run/remove skills |
+| `purchase_approval` | Request/confirm user approval before any financial transaction |
 
 ---
 
@@ -289,7 +300,7 @@ Old conversations are automatically consolidated:
 
 ## Agent System
 
-JARVIS can spawn **autonomous background agents** that run in separate threads. This is useful for tasks that take time or need ongoing monitoring.
+JARVIS can spawn **autonomous background agents** that run in separate threads. Agents range from simple command runners to fully autonomous AI-powered browser agents with their own Gemini brain.
 
 ### Agent Types
 
@@ -297,12 +308,60 @@ JARVIS can spawn **autonomous background agents** that run in separate threads. 
 |------|-------------|---------|
 | `command` | Run a single shell command | "Run a disk cleanup" |
 | `script` | Execute a Python/batch script | "Run my backup script" |
-| `monitor` | Periodically check something | "Monitor CPU and alert if > 90%" |
+| `monitor` | Periodically check something (supports JARVIS tools like screenshot) | "Monitor CPU and alert if > 90%" |
+| `autonomous` | **AI-powered agent** with its own Gemini brain — sees the screen, thinks, acts, reports | "Chat with Grok about AI safety" |
 | `research` | Multi-step web research | "Research the latest Python 3.13 features" |
 | `tool` | Call a JARVIS tool | "Download this file in the background" |
 | `multi_step` | Execute a sequence of steps | "Create a project folder, init git, and add a README" |
 
-Agents report results back to JARVIS, which can then relay them to you. Agent state is persisted in SQLite, so they survive restarts.
+### Autonomous Agents
+
+The most powerful agent type. Each autonomous agent:
+
+1. **Screenshots** the screen using PIL
+2. **Thinks** by sending the screenshot to its own Gemini 2.5 Flash API call
+3. **Acts** by executing browser actions (click, type, press keys, scroll, navigate)
+4. **Reports** interim updates to JARVIS after every iteration
+5. **Loops** until the goal is achieved or max iterations reached
+
+This means JARVIS can send an agent to have a full conversation with another AI (Grok, ChatGPT, Claude), fill out complex forms, or perform any multi-step browser task — all running autonomously in the background while JARVIS continues talking to you.
+
+Agents report results back to JARVIS, which can relay them to you. Agent state is persisted in SQLite, so they survive restarts.
+
+---
+
+## Self-Evolution (Skills)
+
+JARVIS can **create new tools for itself** at runtime — no restart needed. This is the self-evolution system.
+
+### How It Works
+
+- **Create**: Tell JARVIS to create a new skill. It writes a Python module with the tool contract (`TOOL_NAME`, `TOOL_DESC`, `TOOL_PARAMS`, `execute()`).
+- **Install from GitHub**: Give JARVIS a GitHub repo URL. It clones the repo, scans for valid skill files (`.py` or `SKILL.md`), and installs them.
+- **Markdown Skills**: Supports `SKILL.md` files with YAML frontmatter — auto-converted into callable tools that return workflow instructions.
+- **Persistence**: Skills created mid-session are available immediately. After restart, they become first-class tools.
+
+### Example
+> "JARVIS, create a skill that converts temperatures between Celsius and Fahrenheit"
+
+JARVIS writes the Python code, registers the tool, and it's immediately available for use.
+
+---
+
+## Security
+
+JARVIS includes several security measures to protect against misuse:
+
+| Protection | Description |
+|-----------|-------------|
+| **Purchase Protection** | Financial transactions require explicit user approval via `purchase_approval` tool |
+| **Command Blocklist** | Dangerous shell commands (format, mass delete, registry tampering, credential theft, privilege escalation) are blocked |
+| **PowerShell Injection Prevention** | All values interpolated into PowerShell commands are sanitized |
+| **File Path Validation** | File operations block access to system-protected paths (System32, etc.) |
+| **Input Sanitization** | App launcher blocks shell metacharacters; window manager sanitizes targets |
+| **Skill Security Checks** | Skills installed from the internet are scanned for dangerous patterns (`eval`, `exec`, `shell=True`) with warnings |
+| **API Keys Local Only** | All credentials stored locally in gitignored files — never committed or transmitted |
+| **No Network Exposure** | JARVIS runs as a local desktop app with no open ports or web server |
 
 ---
 
@@ -313,29 +372,29 @@ JARVIS/
 ├── main.py               # Entry point — GUI + Gemini Live on daemon thread
 ├── gemini_live.py         # Core engine — 4 async tasks over WebSocket
 ├── gui.py                 # Tkinter Iron Man HUD (3-column layout)
-├── tool_registry.py       # 28 tool declarations + dispatcher
+├── tool_registry.py       # 30+ tool declarations + dispatcher
 ├── setup.py               # One-command installer
 ├── requirements.txt       # Python dependencies
 │
 ├── agent/
-│   ├── agent_manager.py   # AgentManager — spawn/manage background agents
-│   ├── personality.py     # JARVIS personality prompt (Paul Bettany style)
-│   └── utils.py           # Logging and debug utilities
+│   ├── agent_manager.py   # AgentManager — spawn/manage background + autonomous agents
+│   └── personality.py     # JARVIS personality prompt (Paul Bettany style)
 │
 ├── memory/
 │   ├── long_term.py       # Long-term memory API
 │   ├── manager.py         # Memory manager (2-stage fact extraction + consolidation)
-│   ├── sqlite_store.py    # SQLite storage (10 tables: facts, messages, profile, tasks...)
-│   ├── vector_store.py    # ChromaDB vector search (cosine + recency + access boosting)
-│   └── short_term.py      # In-memory session context
+│   ├── sqlite_store.py    # SQLite storage (facts, messages, profile, tasks, reminders)
+│   └── vector_store.py    # ChromaDB vector search (cosine + recency + access boosting)
 │
 ├── tools/
-│   ├── browser_control.py # Browser automation (real Chrome/Edge via keyboard/mouse)
-│   ├── computer_control.py# Mouse & keyboard control (pynput/pyautogui)
+│   ├── browser_control.py # Browser automation (real Chrome/Edge via keyboard/mouse + AI vision)
+│   ├── computer_control.py# Mouse & keyboard control (pyautogui)
 │   └── system_monitor.py  # System stats (psutil)
 │
-├── skills/                # Extensible skill framework (for future plugins)
-│   └── base.py            # Skill contract definition
+├── skills/                # Self-evolution skill framework
+│   ├── base.py            # Skill contract definition
+│   ├── loader.py          # Dynamic skill loader (importlib)
+│   └── manager.py         # Skill create/install/list/run/remove operations
 │
 ├── config/                # API keys (gitignored)
 ├── data/                  # SQLite + ChromaDB data (gitignored)

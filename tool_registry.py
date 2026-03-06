@@ -404,12 +404,18 @@ TOOL_DECLARATIONS = [
         "name": "spawn_agent",
         "description": (
             "Spawn a new background agent to work on a task independently. "
-            "The agent runs in the background and reports results back. "
-            "Use this when the user asks for long-running tasks, parallel work, "
-            "monitoring, research, or anything that should run independently. "
+            "The agent runs in the background and reports results back automatically. "
             "Types: 'command' (run a command), 'script' (run a file), "
-            "'monitor' (watch something periodically), 'research' (web search), "
-            "'tool' (use a JARVIS tool), 'multi_step' (sequential steps), 'general' (auto-detect)."
+            "'monitor' (watch something periodically — uses tools or commands, sends updates after every check), "
+            "'autonomous' (POWERFUL — agent with its own AI brain that can see the screen, think, and act! "
+            "Loops: screenshot → decide → execute browser actions → report. "
+            "Use for: chatting with other AIs, filling forms, complex multi-step browser tasks. "
+            "Set goal=description, max_iterations=20, tools=['browser_control']), "
+            "'research' (web search), 'tool' (use a JARVIS tool once), "
+            "'multi_step' (sequential steps), 'general' (auto-detect). "
+            "For autonomous browser agent: task_type='autonomous', goal='chat with Grok about AI', max_iterations=15. "
+            "For monitoring: task_type='monitor', tool_name='browser_control', "
+            "tool_args='{\"action\":\"screenshot\",\"question\":\"describe what changed\"}', interval_seconds=30."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -440,15 +446,31 @@ TOOL_DECLARATIONS = [
                 },
                 "tool_name": {
                     "type": "STRING",
-                    "description": "Tool to execute (for tool type)"
+                    "description": "Tool to execute (for tool type, OR for monitor type to run a tool each check instead of a command)"
                 },
                 "tool_args": {
                     "type": "STRING",
-                    "description": "JSON string of tool arguments (for tool type)"
+                    "description": "JSON string of tool arguments (for tool/monitor types)"
                 },
                 "interval_seconds": {
                     "type": "INTEGER",
                     "description": "Check interval in seconds (for monitor type, default 10)"
+                },
+                "max_checks": {
+                    "type": "INTEGER",
+                    "description": "Maximum number of checks (for monitor type, default 30)"
+                },
+                "goal": {
+                    "type": "STRING",
+                    "description": "Goal for autonomous agent (what it should accomplish)"
+                },
+                "max_iterations": {
+                    "type": "INTEGER",
+                    "description": "Max iterations for autonomous agent (default 20, each iteration = screenshot + think + act)"
+                },
+                "tools": {
+                    "type": "STRING",
+                    "description": "Comma-separated list of tools the autonomous agent can use (default: 'browser_control')"
                 },
                 "visible": {
                     "type": "BOOLEAN",
@@ -931,6 +953,21 @@ def _exec_file_controller(args: dict) -> str:
     content = args.get("content", "")
     pattern = args.get("pattern", "")
 
+    # Block access to sensitive system paths
+    _blocked_paths = [
+        "\\windows\\system32", "\\windows\\syswow64", "/etc/shadow", "/etc/passwd",
+        "\\system volume information", "$recycle.bin",
+    ]
+
+    def _is_blocked(p: str) -> bool:
+        if not p:
+            return False
+        resolved = os.path.abspath(p).lower()
+        return any(b in resolved for b in _blocked_paths)
+
+    if _is_blocked(path) or _is_blocked(dest):
+        return "Access to system-protected paths is blocked."
+
     try:
         if action == "list":
             items = os.listdir(path)
@@ -982,10 +1019,32 @@ def _exec_cmd(args: dict) -> str:
     visible = args.get("visible", False)
     if not command:
         return "No command specified."
-    # Safety: block obviously dangerous commands
-    dangerous = ["format", "del /s", "rd /s", "rm -rf"]
-    if any(d in command.lower() for d in dangerous):
-        return f"Blocked dangerous command: {command}"
+
+    # Safety: block destructive / dangerous command patterns
+    cmd_lower = command.lower().replace("  ", " ").strip()
+    dangerous_patterns = [
+        # File destruction
+        "format ", "format\t", "del /s", "del /q", "del /f",
+        "rd /s", "rd /q", "rmdir /s", "rmdir /q",
+        "rm -rf", "rm -r", "rm -f",
+        "remove-item -recurse", "remove-item -force",
+        # Registry / system tampering
+        "reg delete", "reg add",
+        "bcdedit", "diskpart", "cipher /w",
+        # Credential theft / exfiltration
+        "mimikatz", "lsass", "sam dump",
+        "net user", "net localgroup",
+        "curl.*|.*powershell", "wget.*|.*powershell",
+        "invoke-webrequest.*-outfile", "iwr.*-outfile",
+        # Privilege escalation
+        "runas", "psexec",
+        # Disable security
+        "set-executionpolicy", "disable-windowsoptionalfeature",
+        "netsh advfirewall set.*off", "sc stop", "sc delete",
+    ]
+    for pat in dangerous_patterns:
+        if pat in cmd_lower:
+            return f"Blocked potentially dangerous command: {command}"
 
     if visible and platform.system() == "Windows":
         # Run in a visible terminal window
@@ -1282,9 +1341,18 @@ def _exec_reminder(args: dict) -> str:
         return f"Reminder error: {e}"
 
 
+def _sanitize_for_powershell(text: str) -> str:
+    """Escape a string for safe use inside PowerShell double-quoted strings."""
+    # Remove characters that could escape PowerShell string context
+    return text.replace('`', '``').replace('"', '`"').replace('$', '`$').replace('\\', '\\\\')
+
+
 def _toast_notification(title: str, message: str):
     """Show a Windows toast notification."""
     try:
+        # Sanitize inputs to prevent PowerShell injection
+        safe_title = _sanitize_for_powershell(title)[:200]
+        safe_message = _sanitize_for_powershell(message)[:500]
         # Try Windows 10+ toast via PowerShell
         ps_cmd = (
             f'[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, '
@@ -1292,8 +1360,8 @@ def _toast_notification(title: str, message: str):
             f'$template = [Windows.UI.Notifications.ToastNotificationManager]::'
             f'GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); '
             f'$text = $template.GetElementsByTagName("text"); '
-            f'$text[0].AppendChild($template.CreateTextNode("{title}")) > $null; '
-            f'$text[1].AppendChild($template.CreateTextNode("{message}")) > $null; '
+            f'$text[0].AppendChild($template.CreateTextNode("{safe_title}")) > $null; '
+            f'$text[1].AppendChild($template.CreateTextNode("{safe_message}")) > $null; '
             f'$notifier = [Windows.UI.Notifications.ToastNotificationManager]::'
             f'CreateToastNotifier("JARVIS"); '
             f'$notifier.Show([Windows.UI.Notifications.ToastNotification]::new($template))'
@@ -1452,10 +1520,10 @@ def _exec_clipboard(args: dict) -> str:
         elif action == "write":
             if not text:
                 return "No text specified to copy."
-            # Use PowerShell Set-Clipboard
+            # Pipe text via stdin to avoid PowerShell injection
             subprocess.run(
-                ["powershell", "-Command", f"Set-Clipboard -Value '{text}'"],
-                capture_output=True, timeout=5,
+                ["powershell", "-Command", "$input | Set-Clipboard"],
+                input=text, capture_output=True, text=True, timeout=5,
             )
             return f"Copied to clipboard: {text[:100]}{'...' if len(text)>100 else ''}"
 
@@ -1793,9 +1861,14 @@ def _exec_window_manager(args: dict) -> str:
         elif action == "switch":
             if not target:
                 return "Specify window_name to switch to."
+            # Sanitize target to prevent PowerShell injection
+            import re
+            safe_target = re.sub(r'[^\w\s\-\.]', '', target)[:100]
+            if not safe_target:
+                return "Invalid window name."
             # Find and activate window using PowerShell
             ps = (
-                f"$proc = Get-Process | Where-Object {{$_.MainWindowTitle -like '*{target}*'}} | "
+                f"$proc = Get-Process | Where-Object {{$_.MainWindowTitle -like '*{safe_target}*'}} | "
                 f"Select-Object -First 1; "
                 f"if ($proc) {{ "
                 f"  $sig = '[DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr hWnd);'; "
@@ -1875,6 +1948,14 @@ def _exec_spawn_agent(args: dict) -> str:
             params["tool_args"] = {}
     if args.get("interval_seconds"):
         params["interval_seconds"] = int(args["interval_seconds"])
+    if args.get("max_checks"):
+        params["max_checks"] = int(args["max_checks"])
+    if args.get("goal"):
+        params["goal"] = args["goal"]
+    if args.get("max_iterations"):
+        params["max_iterations"] = int(args["max_iterations"])
+    if args.get("tools"):
+        params["tools"] = [t.strip() for t in args["tools"].split(",")]
     if args.get("visible"):
         params["visible"] = args["visible"]
 
